@@ -1,0 +1,64 @@
+Steps required to create and configure a Forum based on Organic Groups.
+
+1. Create content type for group posts, typically by cloning an existing content type
+* The content type name should be user-friendly because it is used in email notifications
+* Change publishing options: uncheck Promote to Front Page & check Create New Revision
+* Adjust comment settings (we don't usually use comment titles or show the reply form on the same page as comments). If anon comments are allowed, select Anonymous posters may leave contact info
+* On Compare Revisions tab, uncheck 'Show View changes button on node edit form'
+* Adjust CTSI settings to disable anon commenting (usually), check the allowed login types (UCSF, non UCSF or both) and specify whether to show the Revisions tab to all users
+* Delete any unneeded fields & add new ones. New field names should start with field_opg
+* DO NOT REMOVE STATUS or OG VOCABULARY OR CHANGE SETTINGS (these are set up in the group)
+* Check settings for comment teaser mode (if comment teasers will be shown)
+
+2. Misc settings
+* Add URL alias pattern for the content type at /admin/config/search/path/patterns (copy from another forum that uses the same post noun)
+* Enable voting if needed at /admin/structure/rate (edit widget)
+* Add a Sponsor in the OPG Sponsor taxonomy vocabulary if needed at /admin/structure/taxonomy/opg_sponsor/edit
+
+3. Create group
+* Add OPG Group content (or clone an existing group)
+* Customize the logo field (others can be left as default value)
+* Enter a number for comment teasers shown, if used
+* Select OPG settings for the group (post content type, login types, etc)
+* * Be sure to fill in the URL path*
+* In most cases, you will need to set Group roles and permissions to Override (if you are using a custom content type that has been used by other groups before; if it's the 1st time the new content type is being used, default permissions are OK) 
+* Add permissions for new fields & the new content type nodes by editing the new group's permissions (unless you are NOT overriding general group permission, in that case you would edit /admin/config/group/permissions)
+
+** Create nodes of this content type: 
+*** Member & Non-Member
+** Edit own nodes: 
+*** Member only
+** Edit any nodes:
+*** Admin Member only
+** Should we allow Group Admin delete posts?
+*** Admin Member?
+
+4. Add additional group taxonomy vocabs if needed 
+Standard method:
+* Select the Group tab > Taxonomy > Add vocabulary
+* Name the taxonomy - name will be used in block headers, so keep it simple, but add the group name to the machine name for future reference 
+* Check Enable for the content type used for the group
+* Then you can select the widget type, etc
+* Save and add terms
+* Edit the taxonomy again to select default term, if needed (at the bottom)
+* A sidebar block with linked terms will be displayed automagically
+* To customize sidebar blocks, edit the group Taxonomy blocks field (edit the group, OPG Settings tab)
+** If a group taxonomy doesn't need a block, list the ones that do here
+** Change block headings
+** Add "|inline" at the end for a compact display of terms (that will happen automatically for widget type Autocomplete (Tags Style))
+
+If a taxonomy needs help text, set it up in /admin/structure/taxonomy & then add it as a field to the group content type. Start the name with OPG. Remember to set permissions.
+ 
+5. Access restrictions (if needed)
+* Add IP restrictions (Configuration > CTSI Administration)
+* Add path to /admin/config/search/metatags/context to make sure Google doesn't show group content in search results
+
+6. Add group admin
+* On the group URL, select the Group tab > Add people
+* Send the group admin instructions on how to do everything else!
+
+7. Open the group
+* Change the group to Active status
+* Add to active list on site home page
+
+

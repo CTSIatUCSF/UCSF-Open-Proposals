@@ -1,0 +1,32 @@
+This describes a 'traditional' forum with an RFP timeline. Some forums have the same deadline for close of submission & editing, others are ongoing discussions, etc.
+
+If the phases have deadlines, the active one will change automatically. If not, manually change by editing the group (in Home Page Intro section). [Group admin should do this...] 
+
+*Post Submission Close*
+Edit the forum group: In the Logo field (Header section) change the css rule to hide the Add post button & other content related to submission, as instructed within the field content.
+Go to /admin/config/group/permissions/node/opg_group & remove *create* permission for the content type used by the group, for both members & non-members.
+
+*Post Editing Close*
+[Group admin] Bulk Updates: change all post status values to 'In Review' 
+Go to /admin/config/group/permissions/node/opg_group & remove *edit* permission for the content type used by the group, for both members & non-members.
+
+*Awards*
+[Group admin] Bulk Updates: change all post status values to 'Awarded' or 'Review Complete' (determined by sponsor)
+[Group admin should revise intro text.]
+On the site home page, move forum link to Implementation section after a few days.
+
+*Archival*
+
+On the site home page, move the link to the forum into the archived section, and adjust the placement of the 'see all' html.
+
+Edit the forum group:
+* Home Page Intro > Introductory Text: Add the archive div (copy html from another archived group opp; you need to switch to Full HTML format temporarily) . Make any edits needed to make it clear that the opportunity is complete.
+* Home Page Intro > Link to Details: remove value
+* Text Blocks > Navblock: Get rid of the Read Before Applying list item, commenting item, & subscription item. 
+* Header > Logo:  Add css to hide the timeline on the main view:  .proposal-content .timeline { display: none; }
+
+Bulk Updates:
+Switch to comments hidden & terminate voting for all posts, if that hasn't already been done .
+
+Configuration > System > Subscriptions:
+Add the forum to the Blocked list
