@@ -1,0 +1,13 @@
+diff --git a/includes/database/mysql/schema.inc b/includes/database/mysql/schema.inc
+index 949cf4e..f908320 100644
+--- a/includes/database/mysql/schema.inc
++++ b/includes/database/mysql/schema.inc
+@@ -521,7 +521,7 @@ class DatabaseSchema_mysql extends DatabaseSchema {
+     // @todo: This override should be removed once we require a version of MySQL
+     // that has that bug fixed.
+     try {
+-      $this->connection->queryRange("SELECT $column FROM {" . $table . "}", 0, 1);
++      $this->connection->queryRange("SELECT `$column` FROM {" . $table . "}", 0, 1);
+       return TRUE;
+     }
+     catch (Exception $e) {

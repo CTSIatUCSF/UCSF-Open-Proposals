@@ -1,0 +1,42 @@
+diff --git a/context_ui/context_ui.module b/context_ui/context_ui.module
+index fe654b7..fd2c0a8 100644
+--- a/context_ui/context_ui.module
++++ b/context_ui/context_ui.module
+@@ -310,6 +310,12 @@ function context_ui_settings($form, &$form_state) {
+     '#default_value' => context_ui_dialog_is_enabled(),
+     '#description' => t('When enabled all contextual links will have a Edit Layout link that will refresh the page with the context editor in a dialog box.'),
+   );
++  $form['context_ui_container_selector'] = array(
++    '#type' => 'textfield',
++    '#title' => t('Dialog selector'),
++    '#default_value' => variable_get('context_ui_container_selector', '#page'),
++    '#description' => t('Selector for the context_ui dialog to use for finding an element to attach before. Defaults to #page'),
++  );
+   $form = system_settings_form($form);
+   $form['#submit'][] = 'context_ui_settings_submit';
+   return $form;
+@@ -351,6 +357,7 @@ function context_ui_page_alter(&$page) {
+     drupal_add_library('system', 'ui.dialog');
+     drupal_add_js($path . '/context_ui_dialog.js', array('type' => 'file', 'weight' => 50));
+     drupal_add_css($path . '/context_ui_dialog.css');
++    drupal_add_js(array('context_ui' => array('container_selector' => variable_get('context_ui_container_selector', '#page'))), 'setting');
+ 
+     //figure out which region to put it in - allow it to be configured for themes using different regions
+     $placement = variable_get('context_ui_editor_block_region', 'content');
+diff --git a/context_ui/context_ui_dialog.js b/context_ui/context_ui_dialog.js
+index dc73f91..3bd2c9e 100644
+--- a/context_ui/context_ui_dialog.js
++++ b/context_ui/context_ui_dialog.js
+@@ -7,7 +7,11 @@
+       if(selector) {
+         selector.addClass('context_ui_dialog-processed');
+         selector.detach();
+-        $('#page').prepend(selector);
++        var container;
++        if(!$(Drupal.settings.context_ui.container_selector).size()) {
++          alert(Drupal.t('The context_ui dialog requires a container element to attach to. The selector for this defaults to #page but can be changed on the context administrative page'));
++        }
++        $(Drupal.settings.context_ui.container_selector).prepend(selector);
+ 
+         var labelOpen = Drupal.t('Select Context');
+         var labelClose = Drupal.t('Hide');

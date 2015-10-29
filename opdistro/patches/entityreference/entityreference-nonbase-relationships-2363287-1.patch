@@ -1,0 +1,112 @@
+diff --git a/views/entityreference.views.inc b/views/entityreference.views.inc
+index baa7034..a96459f 100644
+--- a/views/entityreference.views.inc
++++ b/views/entityreference.views.inc
+@@ -66,11 +66,17 @@ function entityreference_field_views_data_views_data_alter(&$data, $field) {
+       if ($target_entity == t('Node')) {
+         $target_entity = t('Content');
+       }
++      if (empty($data[$target_entity_info['base table']]['table']['base']['field'])) {
++        $target_left_field = $target_entity_info['entity keys']['id'];
++      }
++      else {
++        $target_left_field = $data[$target_entity_info['base table']]['table']['base']['field'];
++      }
+ 
+       $pseudo_field_name = 'reverse_' . $field['field_name'] . '_' . $entity_type;
+       $replacements = array('@entity' => $entity, '@target_entity' => $target_entity, '!field_name' => $field['field_name']);
+       $data[$target_entity_info['base table']][$pseudo_field_name]['relationship'] = array(
+-        'handler' => 'views_handler_relationship_entity_reverse',
++        'handler' => 'entityreference_views_handler_relationship_entity_reverse',
+         'field_name' => $field['field_name'],
+         'field table' => _field_sql_storage_tablename($field),
+         'field field' => $field['field_name'] . '_target_id',
+@@ -91,6 +97,7 @@ function entityreference_field_views_data_views_data_alter(&$data, $field) {
+             'numeric' => TRUE,
+           ),
+         ),
++        'target left field' => $target_left_field,
+       );
+     }
+   }
+@@ -145,3 +152,80 @@ function entityreference_views_plugins() {
+   );
+   return $plugins;
+ }
++
++/**
++ * A relationship handlers which reverse entity references.
++ *  Altered to allow for support of entities that are not Views base tables.
++ *  (e.g. taxonomy_vocabulary)
++ */
++class entityreference_views_handler_relationship_entity_reverse extends views_handler_relationship_entity_reverse {
++  /**
++   * Called to implement a relationship in a query.
++   */
++  function query() {
++    $this->ensure_my_table();
++    // First, relate our base table to the current base table to the
++    // field, using the base table's id field to the field's column.
++    if (isset($this->definition['target left field'])) {
++      $left_field = $this->definition['target left field'];
++    }
++    else {
++      $views_data = views_fetch_data($this->table);
++      $left_field = $views_data['table']['base']['field'];
++    }
++
++    $first = array(
++      'left_table' => $this->table_alias,
++      'left_field' => $left_field,
++      'table' => $this->definition['field table'],
++      'field' => $this->definition['field field'],
++    );
++    if (!empty($this->options['required'])) {
++      $first['type'] = 'INNER';
++    }
++
++    if (!empty($this->definition['join_extra'])) {
++      $first['extra'] = $this->definition['join_extra'];
++    }
++
++    if (!empty($this->definition['join_handler']) && class_exists($this->definition['join_handler'])) {
++      $first_join = new $this->definition['join_handler'];
++    }
++    else {
++      $first_join = new views_join();
++    }
++    $first_join->definition = $first;
++    $first_join->construct();
++    $first_join->adjusted = TRUE;
++
++    $this->first_alias = $this->query->add_table($this->definition['field table'], $this->relationship, $first_join);
++
++    // Second, relate the field table to the entity specified using
++    // the entity id on the field table and the entity's id field.
++    $second = array(
++      'left_table' => $this->first_alias,
++      'left_field' => 'entity_id',
++      'table' => $this->definition['base'],
++      'field' => $this->definition['base field'],
++    );
++
++    if (!empty($this->options['required'])) {
++      $second['type'] = 'INNER';
++    }
++
++    if (!empty($this->definition['join_handler']) && class_exists($this->definition['join_handler'])) {
++      $second_join = new $this->definition['join_handler'];
++    }
++    else {
++      $second_join = new views_join();
++    }
++    $second_join->definition = $second;
++    $second_join->construct();
++    $second_join->adjusted = TRUE;
++
++    // use a short alias for this:
++    $alias = $this->definition['field_name'] . '_' . $this->table;
++
++    $this->alias = $this->query->add_relationship($alias, $second_join, $this->definition['base'], $this->relationship);
++  }
++}

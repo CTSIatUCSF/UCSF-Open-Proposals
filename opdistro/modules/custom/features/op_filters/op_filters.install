@@ -1,0 +1,15 @@
+<?php
+
+/**
+ * Completely delete new versions of obsolete old formats from database
+ */
+function op_filters_update_7001() {
+  $formats = array(
+  'testformat',
+  'messaging_plain_text',
+  'editor_wysiwyg',
+  );
+  foreach ($formats as $format) {
+    db_query('delete from filter_format where format = :format', array(':format' => $format));
+  }
+}

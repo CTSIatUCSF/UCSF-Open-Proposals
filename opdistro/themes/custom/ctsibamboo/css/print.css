@@ -1,0 +1,7 @@
+header#head, #menu-wrapper, #sidebar-first, #acknowledgement-wrapper, footer, .rate-button {
+  display: none;
+}
+.container .eleven.columns {
+  width: 100%;
+}
+

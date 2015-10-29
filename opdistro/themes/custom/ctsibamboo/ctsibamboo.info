@@ -1,0 +1,60 @@
+name = ctsibamboo
+description = CTSI customized version of Bamboo theme
+core = 7.x
+engine = phptemplate
+base theme = bamboo
+scripts[] = js/vh.js
+scripts[] = js/easyResponsiveTabs.js
+
+; CSS --------------------
+
+; --- Note, 'responsive.css' must come last!
+stylesheets[all][] = css/menu.css
+stylesheets[all][] = css/responsive.css
+stylesheets[all][] = css/opcolors.css
+stylesheets[all][] = css/entypo.css
+stylesheets[all][] = css/vh.css
+stylesheets[all][] = css/easy-responsive-tabs.css
+stylesheets[print][] = css/print.css
+
+; Regions --------------------
+regions[ucsf_links]       = UCSF Links
+regions[brand]            = Brand
+regions[top_links]       = Top Links
+regions[main_menu]  = Main menu (3rd party menu systems)
+regions[content_top]    = Content top
+regions[hero_first]      = Hero first
+regions[hero_second]  = Hero second
+regions[preface_first]  = Preface first
+regions[preface_second] = Preface second
+regions[preface_third]  = Preface third
+regions[help]           = Help
+regions[sidebar_first]  = Sidebar first
+regions[content]         = Content
+regions[content_after_title]    = Content after Title
+regions[node_block]  = Node Block (block in a node)
+regions[acknowledgement]   = Acknowledgement
+regions[footer_first]   = Footer first
+regions[footer_second]  = Footer second
+regions[footer_third]   = Footer third
+
+; Features --------------------
+features[] = logo
+features[] = name
+features[] = slogan
+features[] = comment_user_picture
+features[] = favicon
+features[] = main_menu
+
+; Bamboo default settings --------------
+
+settings[bamboo_themelogo]  = 1
+settings[breadcrumbs]  = 1
+settings[theme_sidebar_location]  = sidebar_right
+settings[bamboo_viewport]  = 0
+settings[header_font_style]  = sans_serif
+settings[body_font_style]  = sans_serif
+settings[theme_color_palette]  = green_bamboo
+settings[theme_bg]  = dark_linen
+settings[bamboo_tertiarymenu]  = 0
+

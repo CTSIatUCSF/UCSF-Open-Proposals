@@ -1,0 +1,2955 @@
+<?php
+/**
+ * @file
+ * Code for the opg_core feature.
+ */
+
+include_once 'opg_core.features.inc';
+
+define('OPG_CORE_DEFAULT_TYPE', 'opg_default_group');
+
+/**
+ * Custom action definitions
+ */
+include_once 'opg_core.action.inc';
+
+
+/**
+ * Implements hook_init().
+ */
+function opg_core_init() {
+  context_og_context_page_reaction();
+}
+
+/**
+ * Implements hook_cron().
+ */
+function opg_core_cron() {
+  // Change phases that have passed their sell-by date
+  opg_core_expire_phases();
+}
+
+/**
+ * Implements hook_menu().
+ *
+ * @todo Add OG access restriction to participants
+ */
+function opg_core_menu() {
+  $items = array();
+
+  // quick and dirty report page listing participant emails
+  $items['opg-core/%/participants'] = array(
+    'page callback' => 'opg_core_participants',
+    'page arguments' => array(1),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  // group content node create page link
+  $items['opg-core/%/create'] = array(
+    'page callback' => 'opg_core_node_create',
+    'page arguments' => array(1),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+
+}
+
+/**
+ * Implements hook_theme().
+ */
+function opg_core_theme($existing, $type, $theme, $path) {
+  $entries = array();
+
+  $entry = array(
+    'render element' => 'form',
+    'template' => 'templates/comment-form',
+  );
+  $entries['comment_form'] = $entry;
+
+  $entry = array(
+    'variables' => array('vocabularies' => array()),
+    'template' => 'opg-core-taxo-block',
+  );
+  $entries['opg_core_taxo_block'] = $entry;
+
+  return $entries;
+}
+
+/**
+ * Implements hook_user_insert()
+ */
+function opg_core_user_insert(&$edit, $account, $category) {
+  opg_core_default_groups($account);
+}
+
+/**
+ * Implements hook_user_update()
+ */
+function opg_core_user_update(&$edit, $account, $category) {
+  opg_core_default_groups($account);
+}
+
+
+/**
+ * Make given user a member of published default group(s)
+ */
+function opg_core_default_groups($account) {
+  static $called = array();
+  if (empty($account->uid)) {
+    dpm($account, __FUNCTION__ . ': called on anon?');
+    return;
+  }
+  if (!empty($called[$account->uid])) {
+    dpm($account, __FUNCTION__ . ': called before in this request');
+    return;
+  }
+  $called[$account->uid] = $account->uid;
+
+  $entity_type = 'node';
+
+  $bundles = og_get_all_group_bundle();
+  if (empty($bundles[$entity_type][OPG_CORE_DEFAULT_TYPE])) {
+    dpm(compact('account','bundles'), __FUNCTION__ . ': ' . OPG_CORE_DEFAULT_TYPE . ' does not exist or is not group');
+    return;
+  }
+
+  $groups = og_get_groups_by_user($account, $entity_type);
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', $entity_type)
+    ->entityCondition('bundle', OPG_CORE_DEFAULT_TYPE)
+    ->propertyCondition('status', NODE_PUBLISHED)
+  ;
+  $result = $query->execute();
+  foreach ($result as $type => $rows) {
+    foreach ($rows as $id => $row) {
+      if (empty($groups[$id])) {
+        // dpm('Adding user ' . $account->uid . ' to group ' . $id);
+        og_group($type, $id, array('entity_type' => 'user', 'entity' => $account));
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_update_projects_alter().
+ *
+ * Remove OPG modules from update status page.
+ */
+function opg_core_update_projects_alter(&$projects) {
+  foreach (preg_grep('/^opg_/', array_keys($projects)) as $module) {
+    // drupal_set_message("Remove {$module} from status list");
+    unset($projects[$module]);
+  }
+}
+
+/**
+ * Implements hook_node_insert().
+ */
+function opg_core_node_insert($node) {
+  global $user;
+
+  if (og_is_group_content_type('node', $node->type)) {
+    $groups = og_get_entity_groups('node', $node);
+    // dpm(compact('node','groups'), __FUNCTION__);
+    foreach ($groups as $group_type => $gids) {
+      foreach ($gids as $id => $gid) {
+        opg_core_autojoin($group_type, $gid);
+      }
+    }
+  }
+
+  if (og_is_group('node', $node)) {
+    opg_core_group_node_save($node);
+  }
+}
+
+/**
+ * Implements hook_node_update().
+ */
+function opg_core_node_update($node) {
+  if (og_is_group('node', $node)) {
+    opg_core_group_node_save($node);
+  }
+}
+
+/**
+ * Common processing of OG group node being inserted/updated
+ */
+function opg_core_group_node_save($node) {
+  $group = array('group_type' => 'node', 'gid' => $node->nid, 'entity' => $node);
+  opg_core_process_active_phase($group);
+}
+
+/**
+ * Implements hook_og_context_negotiation_info().
+ *
+ *  Set group context based on path - eg 'opg-core/%/etc/yada'
+ *  Stolen entirely from og_extras module.
+ *
+ * @todo Create an admin page to allow adding more paths
+ */
+function opg_core_og_context_negotiation_info() {
+  $providers = array();
+  $providers['opg_core'] = array(
+    'name' => t('OP Group url'),
+    'description' => t("Select group context for any url that starts with 'opg-core/%'. Make sure that all views and custom pages use paths that start with this value in order for the context to be recognized when viewing those pages, and that nothing that is not a group uses that path."),
+    'callback' => 'opg_core_context_handler_url',
+  );
+  return $providers;
+}
+
+/**
+ * Context handler; Get groups from URL.
+ *  Stolen entirely from og_extras module.
+ *
+ * @todo Create an admin page to allow adding more paths
+ */
+function opg_core_context_handler_url() {
+  $context = array();
+  $args = arg();
+  $gid = null;
+  if ($args[0] == 'opg-core' && is_numeric($args[1])) {
+    $gid = $args[1];
+  }
+  elseif (count($args) >= 5 and $args[0] == 'goto' and $args[1] == 'subscribe' and $args[3] == 'group' and is_numeric($args[4])) {
+    $gid = $args[4];
+  }
+  elseif (count($args) >= 4 and $args[0] == 'subscriptions' and $args[2] == 'group' and is_numeric($args[3])) {
+    $gid = $args[3];
+  }
+  elseif (isset($_GET['og_group_ref'])) {
+    // workaround to menu access issue
+    $gid = $_GET['og_group_ref'];
+  }
+  elseif (isset($_REQUEST['opg_gid'])) {
+    // workaround to entityreference + ajax issue
+    //  i think https://www.drupal.org/node/2399755
+    $gid = $_REQUEST['opg_gid'];
+  }
+  else {
+    // dpm(array('args' => $args, '_GET' => $_GET, '_REQUEST' => $_REQUEST), __FUNCTION__ . ': unable to find a gid');
+  }
+  if ($gid and $group = opg_core_gid_to_group($gid)) {
+    $context = array($group['group_type'] => array($group['gid']));
+  }
+  // dpm(compact('args','group','context'), __FUNCTION__);
+  return $context;
+}
+function opg_core_gid_to_group($gid) {
+  $group = false;
+  $msg = "Ambiguous group ID {$gid}:";
+  $count = 0;
+  if ($result = db_query('select distinct group_type, gid from og_membership where gid = :gid', array(':gid' => $gid))) {
+    foreach ($result as $row) {
+      $group = (array)$row;
+      $msg .= ' ' . $row->group_type . ':' . $row->gid;
+      $count++;
+    }
+  }
+  if ($count > 1) {
+    user_error($msg);
+  }
+  return $group;
+}
+
+/**
+ * Implementation of hook_context_node_condition_alter().
+ */
+function opg_core_context_node_condition_alter(&$node,$op) {
+  if ($plugin = context_get_plugin('condition', 'opg_core_condition_node_group_content')) {
+    $plugin->execute($node,$op);
+  }
+  if ($plugin = context_get_plugin('condition', 'opg_core_condition_node_group')) {
+    $plugin->execute($node,$op);
+  }
+}
+
+/**
+ * Implements hook_context_plugins().
+ */
+function opg_core_context_plugins() {
+  $plugins = array();
+
+  $plugins['opg_core_condition_node_group'] = array(
+    'handler' => array(
+      'path' => drupal_get_path('module', 'opg_core') . '/plugins',
+      'file' => 'opg_core_condition_node_group.inc',
+      'class' => 'opg_core_condition_node_group',
+      'parent' => 'context_condition',
+    ),
+  );
+
+  $plugins['opg_core_condition_node_group_content'] = array(
+    'handler' => array(
+      'path' => drupal_get_path('module', 'opg_core') . '/plugins',
+      'file' => 'opg_core_condition_node_group_content.inc',
+      'class' => 'opg_core_condition_node_group_content',
+      'parent' => 'context_condition',
+    ),
+  );
+
+  return $plugins;
+}
+
+
+/**
+ * Implements hook_context_registry().
+ */
+function opg_core_context_registry() {
+  $registry = array();
+
+  $registry['conditions']['opg_core_condition_node_group'] = array(
+    'title' => t('OPG - node group type context'),
+    'plugin' => 'opg_core_condition_node_group',
+    'description' => t('Check that node type is group (or not)'),
+  );
+
+  $registry['conditions']['opg_core_condition_node_group_content'] = array(
+    'title' => t('OPG - node group content type context'),
+    'plugin' => 'opg_core_condition_node_group_content',
+    'description' => t('Check that node type is group content (or not)'),
+  );
+
+  return $registry;
+}
+
+/**
+ * Implements hook_preprocess().
+ */
+function opg_core_preprocess(&$vars, $hook) {
+  static $hooks = array();
+  if (empty($hooks[$hook])) {
+    // dpm($hook, __FUNCTION__);
+    $hooks[$hook] = $hook;
+  }
+
+  $opg = $defaults = array();
+  opg_core_get_nouns($defaults);
+  opg_core_get_groupword($defaults);
+  if ($group = og_context()) {
+    $opg = opg_core_load_opg($group);
+  }
+
+  switch ($hook) {
+    case 'block':
+      if (isset($opg['nouns']) and $opg['nouns'] != $defaults['nouns'] and strpos($vars['block']->subject, $defaults['nouns']) !== FALSE and strpos($vars['block']->subject, $opg['nouns']) === FALSE) {
+        $vars['block']->subject = str_replace($defaults['nouns'], $opg['nouns'], $vars['block']->subject);
+      }
+      if (isset($opg['groupword']) and $opg['groupword'] != $defaults['groupword'] and strpos($vars['block']->subject, $defaults['groupword']) !== FALSE and strpos($vars['block']->subject, $opg['groupword']) === FALSE) {
+        $vars['block']->subject = str_replace($defaults['groupword'], $opg['groupword'], $vars['block']->subject);
+      }
+      break;
+
+    case 'views_view':
+      if (isset($vars['view']->name) and $vars['view']->name == 'opg_core') {
+        if (isset($opg['nouns']) and $opg['nouns'] != $defaults['nouns'] and strpos($vars['header'], $defaults['nouns']) !== FALSE and strpos($vars['header'], $opg['nouns']) === FALSE) {
+          $vars['header'] = str_replace($defaults['nouns'], $opg['nouns'], $vars['header']);
+        }
+        if (isset($opg['groupword']) and $opg['groupword'] != $defaults['groupword'] and strpos($vars['header'], $defaults['groupword']) !== FALSE and strpos($vars['header'], $opg['groupword']) === FALSE) {
+          $vars['header'] = str_replace($defaults['groupword'], $opg['groupword'], $vars['header']);
+        }
+      }
+      break;
+
+    case 'page':
+      if ($group = og_context() and $group_entity = entity_load_single($group['group_type'], $group['gid'])) {
+        // dpm(compact('group', 'group_entity', 'vars'), __FUNCTION__ . ' ' . $hook);
+        $wrapper = entity_metadata_wrapper($group['group_type'], $group_entity);
+        $vars['section_title'] = $wrapper->label();
+        $uri = entity_uri($group['group_type'], $group_entity);
+        if ($_GET['q'] != $uri['path']) {
+          $vars['section_title'] = l($vars['section_title'], $uri['path'], $uri['options']);
+        }
+        if (isset($wrapper->field_opg_subtitle) and $subtitle = $wrapper->field_opg_subtitle->value()) {
+          $vars['section_subtitle'] = $subtitle;
+        }
+      }
+      break;
+
+    case 'views_view_fields':
+      if ($vars['view']->name == 'opg_core') {
+        if ($vars['view']->current_display == 'comments_block') {
+          // dpm($vars, $hook . '::' . $vars['view']->name . ':' . $vars['view']->current_display);
+          // dpm($vars['row']);
+          if (node_mark($vars['row']->nid, $vars['row']->comment_node_changed)) {
+            $vars['fields']['title']->content = '<span class="newtag2">NEW</span>&nbsp;' . $vars['fields']['title']->content;
+          }
+        }
+      }
+      break;
+
+  }
+}
+
+function opg_core_process_comment_form(&$vars, $hook) {
+  $args = func_get_args();
+  // dpm($args, __FUNCTION__);
+
+  $node = $vars['form']['#node'];
+  if ($group = opg_core_node_in_group($node)) {
+    $group_entity = entity_load_single($group['group_type'], $group['gid']);
+    $wrapper = entity_metadata_wrapper($group['group_type'], $group_entity);
+    if (isset($wrapper->field_opg_noanoncom) and $wrapper->field_opg_noanoncom->raw()) {
+      $vars['anon_allowed'] = 0;
+    }
+  }
+
+  $vars['me'] = __FUNCTION__;
+}
+
+/**
+ * Implements hook_preprocess_node().
+ */
+function opg_core_preprocess_node(&$vars) {
+  global $user;
+
+  $node = $vars['node'];
+  $vars['theme_hook_suggestions'][] = 'node__opg_core';
+  if (og_is_group('node', $node)) {
+    $vars['theme_hook_suggestions'][] = 'node__opg_core__group';
+    $vars['theme_hook_suggestions'][] = 'node__opg_core__group__' . $node->type;
+  }
+  if (og_is_group_content_type('node', $node->type)) {
+    $vars['theme_hook_suggestions'][] = 'node__opg_core__group_content';
+    $vars['theme_hook_suggestions'][] = 'node__opg_core__group_content__' . $node->type;
+    if ($group = og_context() and $group['group_type'] == 'node' and $group_node = node_load($group['gid'])) {
+      $vars['theme_hook_suggestions'][] = 'node__opg_core__group_content__' . $group_node->type;
+
+      $grapper = entity_metadata_wrapper('node', $group_node);
+
+      if (empty($user->uid) and isset($vars['content']['links']['comment']['#links']['comment-add'])) {
+        if (isset($grapper->field_opg_noanoncom) and $grapper->field_opg_noanoncom->raw()) {
+          // only override content type for the group if we actually have a value
+          // dpm('remove new comment link');
+          unset($vars['content']['links']['comment']['#links']['comment-add']);
+        }
+      }
+
+      if (isset($grapper->field_opg_noun) and isset($vars['content']['field_opg_status'])) {
+        $vars['content']['field_opg_status']['#title'] = trim($grapper->field_opg_noun->value() . ' Status');
+      }
+    }
+    $wrapper = entity_metadata_wrapper('node', $node);
+    if (isset($wrapper->field_opg_primary_author)) {
+      $pa_entity = $wrapper->field_opg_primary_author->value();
+      $pa_entity_type = $wrapper->field_opg_primary_author->type();
+      $prefix = 'field_opg';
+      op_common_setup_entity_primary_author($pa_entity_type, $pa_entity, $prefix, $vars);
+    }
+  }
+  // no reason i can see not to do this stuff for everybody
+  op_common_setup_node($vars);
+}
+
+/**
+ * Implements hook_context_page_reaction().
+ *
+ *  A preprocess_page() function called before all other preprocessors.
+ *  See context_page_alter()
+ *
+ *  Some hacky crap.
+ */
+function opg_core_context_page_reaction() {
+  if (context_isset('context', 'opg_core_nodeform')) {
+
+    // utility functions
+    drupal_add_js( drupal_get_path('module', 'op_common') . '/op_common.js');
+
+  }
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ *  for group content node forms
+ */
+function opg_core_form_node_form_alter(&$form, &$form_state, $form_id) {
+  global $user;
+
+  $node = $form['#node'];
+  if (og_is_group_type('node', $node->type)) {
+    // dpm(compact('form','form_state','form_id'), __FUNCTION__ . ' altering a group form');
+    $wrapper = entity_metadata_wrapper('node', $node);
+    $post_type = isset($wrapper->field_opg_post_type) ? $wrapper->field_opg_post_type->raw() : FALSE;
+    foreach (array('node','comment') as $vtype) {
+      $field_name = 'field_opg_novote_' . $vtype;
+      if (isset($form[$field_name])) {
+        // dpm(compact('widgets','node','form','form_state','form_id'), 'check voting on ' . $vtype . ' for ' . $post_type);
+        if ($post_type) {
+          if ($widgets = rate_get_active_widgets($vtype, $post_type)) {
+            // $form[$field_name][$node->language]['#description'] = 'Voting has been enabled for ' . node_type_get_name($post_type) . ' ' . $vtype . 's';
+          }
+          else {
+            $form[$field_name]['#disabled'] = TRUE;
+            $form[$field_name][$node->language]['#default_value'] = 0;
+            $form[$field_name][$node->language]['#description'] = 'Voting has not been enabled for ' . node_type_get_name($post_type) . ' ' . $vtype . 's';
+          }
+        }
+        else {
+          // $form[$field_name][$node->language]['#description'] = 'The Post Content Type for this group has not yet been set, so voting on ' . $vtype . 's cannot be checked';
+          // just hide the whole thing
+          $form[$field_name]['#access'] = FALSE;
+        }
+      }
+      else {
+        // dpm($form, 'there is no such field ' . $field_name);
+      }
+    }
+
+    if (isset($form['field_opg_revision_tab'])) {
+      if ($post_type) {
+        if (!variable_get('ctsi_revision_tab_' . $post_type, 0)) {
+          $form['field_opg_revision_tab']['#disabled'] = TRUE;
+          $form['field_opg_revision_tab'][$node->language]['#default_value'] = 0;
+          $form['field_opg_revision_tab'][$node->language]['#description'] = 'The Revisions tab has been hidden for the ' . node_type_get_name($post_type) . ' content type';
+        }
+        else {
+          // $form['field_opg_revision_tab'][$node->language]['#description'] = 'The Revisions tab has been enabled for non-editors for the ' . node_type_get_name($post_type) . ' content type';
+        }
+      }
+      else {
+        // $form['field_opg_revision_tab'][$node->language]['#description'] = 'The Post Content Type for this group has not yet been set, so the Revisions tab status cannot be determined';
+        // just hide the whole thing
+        $form['field_opg_revision_tab']['#access'] = FALSE;
+      }
+    }
+    else {
+      // dpm($form, 'there is no field_opg_revision_tab field');
+    }
+
+    if (isset($form['field_opg_noanoncom'])) {
+      if ($post_type) {
+        $disable = $help = null;
+        if (!user_access('post comments', drupal_anonymous_user())) {
+          $disable = true;
+          $help = t('Anonymous users do not have <a href="@url">"Post comments" permission</a>.', array('@url' => url('admin/people/permissions')));
+        }
+        elseif (!variable_get('ctsi_allow_anonymous_comments_' . $post_type, 1)) {
+          $disable = true;
+          $help = t('Anonymous comments are disabled for the %type content type', array('%type' => node_type_get_name($post_type)));
+        }
+        if ($disable) {
+          $form['field_opg_noanoncom']['#disabled'] = TRUE;
+          $form['field_opg_noanoncom'][$node->language]['#default_value'] = 0;
+          $form['field_opg_noanoncom'][$node->language]['#description'] = $help;
+        }
+        else {
+          // $form['field_opg_noanoncom'][$node->language]['#description'] = 'Anonymous comments are enabled for the ' . node_type_get_name($post_type) . ' content type';
+        }
+      }
+      else {
+        // $form['field_opg_noanoncom'][$node->language]['#description'] = 'The Post Content Type for this group has not yet been set, so anonymous comment status cannot be determined';
+        // just hide the whole thing
+        $form['field_opg_noanoncom']['#access'] = FALSE;
+      }
+    }
+    else {
+      // dpm($form, 'there is no field_opg_noanoncom field');
+    }
+
+    if (isset($form['#groups']['group_opg_mgr']->label)) {
+      $defaults = array();
+      opg_core_get_groupword($defaults);
+      if (isset($wrapper->field_opg_groupword)) {
+        if ($groupword = trim($wrapper->field_opg_groupword->value()) and $groupword != $defaults['groupword']) {
+          $form['#groups']['group_opg_mgr']->label = str_replace($defaults['groupword'], $groupword, $form['#groups']['group_opg_mgr']->label);
+        }
+      }
+    }
+
+  }
+  if (og_is_group_content_type('node', $node->type)) {
+    // dpm(compact('form','form_state','form_id','node'), __FUNCTION__ . ' altering a group content form');
+    $prepop = $group = null;
+    $gids = null;
+    if ($gids = og_context_handler_url()) {
+      // awesome
+    }
+    elseif ($node and $gids = og_context_handler_node($node)) {
+      // cool
+    }
+    elseif (!empty($form_state['input']['opg_gid'])) {
+      $ogid = $form_state['input']['opg_gid'];
+      $ogidtype = $form_state['input']['opg_gid_type'];
+      $gids = array($ogidtype => array($ogid));
+    }
+    else {
+      // dpm('no gids man');
+    }
+    if ($gids) {
+      $context = og_context();
+      foreach ($gids as $ptype => $pgids) {
+        foreach ($pgids as $prepop) {
+          if ($ptype == $context['group_type'] and $prepop == $context['gid']) {
+            $group = $context;
+          }
+          break;
+        }
+      }
+    }
+    if (empty($node->nid)) {
+      opg_core_create_access($node->type, $prepop);
+    }
+    if ($group) {
+      // dpm(compact('group','node','prepop','form','form_state'), __FUNCTION__ . ' core node group si');
+      // muck about with normal forum content forms
+      $form['opg_gid'] = array(
+        '#type' => 'hidden',
+        '#value' => $group['gid'],
+      );
+      $form['opg_gid_type'] = array(
+        '#type' => 'hidden',
+        '#value' => $group['group_type'],
+      );
+
+      if ($opg = opg_core_load_opg($group)) {
+        switch ($node->type) {
+          case 'opg_admin_post':
+          case 'page':
+            break;
+
+          default:
+            // relabel "Save" when creating or editing a node
+            $form['actions']['submit']['#value'] = $opg['postwords'];
+
+            $oldprefix = 'Preview trimmed version';
+            $newprefix = $oldprefix . ' (to appear on list of ' . $opg['lcnouns'] . ')';
+            if (!empty($form['#prefix']) and strpos($form['#prefix'], $oldprefix) !== false) {
+              $form['#prefix'] = str_replace($oldprefix, $newprefix, $form['#prefix']);
+            }
+
+            // customize the page title
+            if (empty($form['#node']->title)) {
+              drupal_set_title('Create ' . $opg['noun']);
+            }
+            else {
+              drupal_set_title($form['#node']->title);
+            }
+
+            // make the "Authoring information" fieldset available to people with "edit any" permission
+            $form['author']['#access'] = og_user_access($opg['group_type'], $opg['gid'], 'edit any ' . $node->type . ' content');
+
+            opg_core_setup_primary_author_autocomplete($form, $form_state);
+
+            // move Subscriptions fieldset around
+            if (!is_array($form['#after_build'])) {
+              $form['#after_build'] = array();
+            }
+            $form['#after_build'][] = 'op_common_node_form_after_build_move_subscriptions';
+
+            if (!ctsi_is_admin()) {
+              // TODO these probably suck
+              op_common_setup_revisions_fieldset($form, $form_state);
+              op_common_setup_subscriptions_notify($form, $form_state);
+            }
+
+            if (empty($node->nid)) {
+              // dpm('new node');
+
+              // only do this stuff on Create form
+
+              opg_core_setup_status_default($form, $group, 'field_opg_status');
+
+              if (!empty($user->uid)) {
+                $groups = og_get_groups_by_user($user, $opg['group_type']);
+                if (!isset($groups[$opg['gid']])) {
+                  // dpm('not a member');
+
+                  if (!subscriptions_get_subscription($user->uid, 'node', 'gid', $opg['gid'])) {
+                    // dpm('not already following group');
+                    $form['opg_follow'] = array(
+                      '#type' => 'fieldset',
+                      '#title' => t('Follow This !groupword', array('!groupword' => $opg['groupword'])),
+                      '#tree' => TRUE,
+                    );
+                    if (isset($form['options']['#weight'])) {
+                      $form['opg_follow']['#weight'] = $form['options']['#weight'] + 1;
+                    }
+                    else {
+                      $form['opg_follow']['#weight'] = 96;
+                    }
+                    $article = preg_match('/^[aeiou]/i', $opg['lcgroupword']) ? 'an' : 'a';
+                    $form['opg_follow']['words'] = array(
+                      '#markup' => t('As !article !groupword participant, you will receive occasional general announcements about %name.', array('!article' => $article, '!groupword' => $opg['lcgroupword'], '%name' => $opg['label'])),
+                    );
+                    $form['opg_follow']['signmeup'] = array(
+                      '#type' => 'checkbox',
+                      '#title' => t('I would like to follow %group !noun activity.', array('%group' => $opg['label'], '!noun' => $opg['noun'])),
+                      '#default_value' => 1,
+                    );
+                    $form['opg_follow']['subsform'] = array(
+                      '#type' => 'container',
+                      '#states' => array(
+                        'visible' => array(
+                          ':input[name="opg_follow[signmeup]"]' => array('checked' => TRUE),
+                        ),
+                      ),
+                    );
+                    module_load_include('inc', 'subscriptions', 'subscriptions.admin');
+                    $form['opg_follow']['subsform'] = subscriptions_add_form($form['opg_follow']['subsform'], $form_state, 'group', $opg['gid']);
+                    unset($form['opg_follow']['subsform']['submit']);
+     
+                    $form['#submit'][] = 'opg_core_create_follow_submit';
+                  }
+                  else {
+                    // dpm('Already following group');
+                  }
+                }
+                else {
+                  // dpm('already a member');
+                }
+              }
+              else {
+                // dpm('anon');
+              }
+            }
+            else {
+              // dpm('not a new node');
+            }
+            break;
+        }
+
+      }
+      else {
+        dpm(compact('form','form_state','node','group','group_entity'), __FUNCTION__ . ' could not load group entity');
+      }
+    }
+    else {
+      // dpm(compact('group','node','prepop','form','form_state'), __FUNCTION__ . ' core node group no');
+    }
+  }
+}
+
+/**
+ * Check if given node is in the current group
+ */
+function opg_core_node_in_group($node) {
+  if (og_is_group_content_type('node', $node->type) and $group = og_context()) {
+    if ($gids = og_get_entity_groups('node', $node)) {
+      if (isset($gids['node']) and in_array($group['gid'], $gids['node'])) {
+        return $group;
+      }
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Deny create access to group content
+ *  for either specified group ID or current group
+ */
+function opg_core_create_access($type, $group=NULL) {
+  global $user;
+
+  $denied = false;
+
+  $group_type = $gid = NULL;
+  if (empty($group)) {
+    if ($group = og_context()) {
+      $gid = $group['gid'];
+      $group_type = $group['group_type'];
+    }
+  }
+  elseif (is_numeric($group)) {
+    $gid = $group;
+    if ($row = db_query('select group_type from {og_membership} where gid = :gid limit 1', array(':gid' => $gid))->fetchObject()) {
+      $group_type = $row->group_type;
+    }
+  }
+  if ($group_type and $gid) {
+    if (!og_user_access($group_type, $gid, 'create ' . $type . ' content')) {
+      // whatever Drupal thinks, don't let people create stuff without permission
+      $denied = true;
+    }
+    elseif (empty($user->uid)) {
+      // anonymouse go home
+      $denied = true;
+    }
+  }
+
+  if ($denied) {
+    // pass them off to the node create page to do smart things
+    drupal_goto('opg-core/' . $gid . '/create');
+    exit;
+  }
+}
+
+/**
+ * Utility function called by OPG node form alter function for Primary Author lookup.
+ */
+function opg_core_setup_primary_author_autocomplete(&$form, &$form_state) {
+  // well that wasn't obscure or anything
+  //  http://drupal.stackexchange.com/a/66414/18349
+
+  $field_name = 'field_opg_primary_author';
+  if (isset($form[$field_name])) {
+    $langcode = field_language('node', $form['#node'], $field_name);
+    $form[$field_name][$langcode][0]['field_opg_lookup_pa'][$langcode][0]['value']['#autocomplete_path'] = 'op/ajax/autocomplete_user';
+    // load context-specific Javascript
+    // TODO this all can probably attach to the field collection with alter hooks
+    //    it'd be better to put it at that level
+    drupal_add_js( drupal_get_path('module', 'opg_core') . '/opg_core_nodeform.js');
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function opg_core_entity_info_alter(&$info) {
+  // dpm($info, __FUNCTION__);
+
+  // the standard Status vocabulary, we know about
+  $info['taxonomy_term']['bundles']['opg_status']['uri callback'] = 'opg_core_term_uri';
+  
+  $vids = array();
+
+  // other vocabularies assigned as Status vocabularies in groups
+  if ($exists = field_info_field('field_opg_status_voc')) {
+    $query = new EntityFieldQuery();
+    $query->fieldCondition('field_opg_status_voc','target_id','NULL','!=');
+    if ($result = $query->execute()) {
+      foreach ($result as $entity_type => $v) {
+        foreach (entity_load($entity_type, array_keys($v)) as $entity_id => $entity) {
+          $wrapper = entity_metadata_wrapper($entity_type, $entity);
+          if (isset($wrapper->field_opg_status_voc)) {
+            $vid = $wrapper->field_opg_status_voc->raw();
+            $vids[$vid]['status'][$entity_type][] = $entity_id;
+          }
+        }
+      }
+    }
+  }
+  else {
+    // field doesn't exist yet (eg early in installation)
+    //  - just skip it
+  }
+
+  // probably safe for now to do the same for og_vocab vocabularies
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'og_vocab');
+  if ($result = $query->execute()) {
+    foreach ($result as $entity_type => $v) {
+      foreach (entity_load($entity_type, array_keys($v)) as $entity_id => $entity) {
+        $vids[$entity->vid]['og_vocab'][$entity_type][] = $entity_id;
+      }
+    }
+  }
+
+  if ($vids and $vocabularies = entity_load('taxonomy_vocabulary', array_keys($vids))) {
+    foreach ($vocabularies as $vocabulary) {
+      $info['taxonomy_term']['bundles'][$vocabulary->machine_name]['uri callback'] = 'opg_core_term_uri';
+    }
+  }
+
+  // vocabularies referenced by term reference fields
+  $field_map = field_info_field_map();
+  $gcs = og_get_all_group_content_bundle();
+  $vnames = array();
+  foreach ($field_map as $field_name => $m) {
+    if ($m['type'] == 'taxonomy_term_reference') {
+      $gctype = false;
+      foreach ($m['bundles'] as $entity_type => $bundles) {
+        foreach ($bundles as $bundle) {
+          if (isset($gcs[$entity_type][$bundle])) {
+            $gctype = true;
+            break 2;
+          }
+        }
+      }
+      if ($gctype) {
+        foreach (opg_core_field_vocabulary_names($field_name) as $vname) {
+          $vnames[$vname] = $vname;
+        }
+      }
+      else {
+        // echo $field_name, ' is taxonomy but not part of a group content type', "\n";
+      }
+    }
+  }
+  foreach ($vnames as $vname) {
+    if (empty($info['taxonomy_term']['bundles'][$vname]['uri callback'])) {
+      $info['taxonomy_term']['bundles'][$vname]['uri callback'] = 'opg_core_term_uri';
+    }
+  }
+
+}
+
+function opg_core_field_vocabulary_names($field_name) {
+  $vnames = array();
+  $field_info = field_info_field($field_name);
+  if (!empty($field_info['settings']['allowed_values'])) {
+    foreach ($field_info['settings']['allowed_values'] as $i => $v) {
+      foreach ($v as $k => $vv) {
+        if ($k == 'vocabulary') {
+          $vnames[$vv] = $vv;
+        }
+      }
+    }
+  }
+  // when a simple Term reference just isn't swanky enuf
+  if ($field_info['type'] == 'entityreference') {
+    if (isset($field_info['settings']['target_type'])
+      and $field_info['settings']['target_type'] == 'taxonomy_term'
+    ) {
+      if (isset($field_info['settings']['handler_settings']['target_bundles'])) {
+        foreach ($field_info['settings']['handler_settings']['target_bundles'] as $vname) {
+          $vnames[$vname] = $vname;
+        }
+      }
+    }
+  }
+  return $vnames;
+}
+
+/**
+ * Implements callback_entity_info_uri().
+ *
+ * Callback for taxonomy terms related to group content.
+ *  Passes terms found in a group context off to the taxonomy display of the opg_core view.
+ *
+ * @see opg_core_entity_info_alter()
+ *
+ */
+function opg_core_term_uri($term) {
+  // dpm($term, __FUNCTION__);
+
+  if ($group = og_context()) {
+
+    // use the opg_core view and term name
+    //  TODO figure out if we need this to be configurable or what
+    if (isset($term->name)) {
+      $name = $term->name;
+    }
+    else {
+      $dbterm = taxonomy_term_load($term->tid);
+      $name = $dbterm->name;
+    }
+    // the view won't convert dashes to spaces in the relationship join
+    // so why bother with lowercase
+    // $name = strtolower($name);
+    // $name = str_replace(' ', '-', $name);
+
+    $path = 'opg-core/' . $group['gid'] . '/topic/' . $name;
+
+    if ($group['group_type'] == 'node') {
+      $group_path = 'node/' . $group['gid'];
+      $group_alias = drupal_get_path_alias($group_path);
+      if ($group_alias != $group_path) {
+        $term_alias = $group_alias . '/topic/' . $name;
+        $alias = drupal_get_path_alias($path);
+        if ($alias != $term_alias) {
+          $options = array('source' => $path);
+          // dpm(__FUNCTION__ . ": delete alias {$options['source']}");
+          path_delete($options);
+          $options['alias'] = $term_alias;
+          // dpm(__FUNCTION__ . ": save alias {$options['source']} as {$options['alias']}");
+          path_save($options);
+        }
+      }
+    }
+
+    return array(
+      'path' => $path,
+    );
+  }
+
+  return taxonomy_term_uri($term);
+}
+
+/**
+ * Implements hook_path_insert().
+ */
+function opg_core_path_insert($path) {
+  opg_core_group_aliases('insert', $path);
+}
+
+/**
+ * Implements hook_path_update().
+ */
+function opg_core_path_update($path) {
+  opg_core_group_aliases('update', $path);
+}
+
+/**
+ * Implements hook_path_delete().
+ */
+function opg_core_path_delete($path) {
+  opg_core_group_aliases('delete', $path);
+}
+
+/**
+ * Utility function to update/create aliases related to a group
+ */
+function opg_core_group_aliases($op, $path) {
+  // dpm(compact('op','path'), __FUNCTION__);
+  $m = array();
+  if ($group = og_context()) {
+    if ($group['group_type'] == 'node' and $path['source'] == 'node/' . $group['gid']) {
+      opg_core_group_node_aliases($op, $path, $group);
+    }
+  }
+  elseif (preg_match('#node/([0-9]+)#', $path['source'], $m)) {
+    $nid = $m[1];
+    $node = node_load($nid);
+    if (og_is_group('node', $node)) {
+      $group = array('group_type' => 'node', 'gid' => $nid);
+      opg_core_group_node_aliases($op, $path, $group);
+    }
+  }
+}
+
+/**
+ * Update/create aliases related to a group node
+ */
+function opg_core_group_node_aliases($op, $path, $group) {
+  $aliaspaths = null;
+
+  if ($aliaspaths === null) {
+    if ($result = db_query('select path from menu_router where path like :path', array(':path' => 'opg-core/\%/%'))) {
+      foreach ($result as $row) {
+        if ($pos = strpos($row->path, '%')) {
+          $head = substr($row->path, 0, $pos);
+          $tail = substr($row->path, $pos+1);
+          $aliaspaths[$row->path] = array('head'=>$head, 'tail'=> $tail);
+        }
+        else {
+          dpm($row, 'weird opg-core path');
+        }
+      }
+    }
+  }
+
+  $gid = $group['gid'];
+  $group_node = node_load($gid);
+  // dpm(compact('op','group','path','gid','group_node'), __FUNCTION__);
+
+  foreach ($aliaspaths as $aliaspath => $parts) {
+    $options = array();
+    $options['source'] = str_replace('%', $gid, $aliaspath);
+    // dpm(__FUNCTION__ . ": delete alias {$options['source']}");
+    path_delete($options);
+    $options['alias'] = $path['alias'] . $parts['tail'];
+    // dpm(__FUNCTION__ . ": alias {$options['source']} as {$options['alias']}");
+    path_save($options);
+  }
+
+}
+
+/**
+ * Run queries to get names and emails of various groups of users
+ *  and display them - for use of admins in sending out mail
+ *
+ * Rewrite of op_common_participants() to run against a group, not content type
+ *
+ * @param $gid
+ *  OG group ID number
+ * @param $exclude
+ *  Optional name or array of names of content types to exclude from counts
+ *  Defaults to "page" for now.
+ *
+ * @todo Add content type UI field "Exclude me from forum reports and counts"
+ *
+ */
+function opg_core_participants($gid, $exclude = NULL) {
+
+  $output = '';
+
+  $participants = array(
+    'subscribers' => array(
+      'title' => 'Forum Subscribers',
+      'names' => array(),
+    ),
+    'authors' => array(
+      'title' => 'Proposal Authors',
+      'names' => array(),
+    ),
+    'commenters' => array(
+      'title' => 'Participants',
+      'names' => array(),
+    ),
+    'noncoms' => array(
+      'title' => 'Non-Commenting Authors',
+      'names' => array(),
+    ),
+  );
+
+  $group = array();
+  if ($row = db_query('select group_type, gid from og_membership where gid = :gid limit 1', array(':gid' => $gid))->fetchObject()) {
+    $group = (array)$row;
+    $group_type = $row->group_type;
+  }
+  else {
+    dpm("No group found for gid {$gid}");
+    return $output;
+  }
+
+  $group_entity = entity_load_single($group_type, $gid);
+  $grapper = entity_metadata_wrapper($group_type, $group_entity);
+  $group_name = $grapper->label();
+
+  if ($exclude === NULL) {
+    $exclude = array(
+      'page',
+    );
+  }
+  else {
+    $exclude = (array)$exclude;
+  }
+
+  // we can only get types of actually existing nodes
+  $types = array();
+  foreach (db_query('select distinct n.type from {node} n join {og_membership} o on n.nid = o.etid and o.entity_type = :entity_type and o.gid = :gid', array(':entity_type' => 'node', ':gid' => $gid)) as $row) {
+    if (!in_array($row->type, $exclude)) {
+      $types[] = $row->type;
+    }
+  }
+
+  // subscribers
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {subscriptions} s
+  join {users} u on s.recipient_uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where s.module = 'node'
+and (
+  (s.field = 'gid' and s.value = :gid)
+  or (s.field = 'nid' and s.value in (select etid from {og_membership} where entity_type = 'node' and gid = :gid))
+)
+and u.uid > 0
+order by realname
+EOQ;
+  $bind = array(':gid' => $gid);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['subscribers']['names'][$row->uid] = $row;
+    }
+  }
+
+  // authors
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {node} n
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  join {users} u on n.uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where u.uid > 0
+order by realname
+EOQ;
+  $bind = array(':gid' => $gid);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['authors']['names'][$row->uid] = $row;
+    }
+  }
+
+  // commenters
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {comment} c
+  join {node} n on c.nid = n.nid
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  join {users} u on c.uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where u.uid > 0
+union
+select distinct c.uid, c.name, c.mail, c.name as realname
+from {comment} c
+  join {node} n on c.nid = n.nid
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+where c.uid = 0
+and c.mail > ''
+order by realname
+EOQ;
+  $bind = array(':gid' => $gid);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['commenters']['names'][$row->mail] = $row;
+    }
+  }
+
+  $sql = <<<EOQ
+select distinct p.uid, r.realname, a.name, a.mail
+from {node} p
+  join {og_membership} op on p.nid = op.etid and op.entity_type = 'node' and op.gid = :gid
+join {realname} r on p.uid = r.uid
+join {users} a on p.uid = a.uid
+where p.uid not in (
+  select c.uid from {comment} c
+    join {node} n on c.nid = n.nid
+    join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  where n.uid != p.uid
+)
+and lower(trim(a.mail)) not in (
+  select lower(trim(c.mail)) from {comment} c
+    join {node} n on c.nid = n.nid
+    join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  where n.uid != p.uid
+)
+and lower(r.realname) not in (
+  select lower(trim(c.name)) from {comment} c
+    join {node} n on c.nid = n.nid
+    join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  where n.uid != p.uid
+)
+EOQ;
+  $bind = array(':gid' => $gid);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['noncoms']['names'][$row->mail] = $row;
+    }
+  }
+
+  // TODO what if they use a different primary author field?
+  // TODO there is no join capability in EntityFieldQuery in Drupal 7.x
+  //  so no legit way to do this
+  $sql = <<<EOQ
+select n.nid
+  , p.entity_id
+  , p.entity_type
+  , p.field_opg_not_pa_value
+from {node} n
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  join {field_data_field_opg_primary_author} a on n.nid = a.entity_id
+    and a.entity_type = 'node'
+    and a.bundle = n.type
+  join {field_data_field_opg_not_pa} p
+    on a.field_opg_primary_author_value = p.entity_id
+      and p.entity_type = 'field_collection_item'
+      and p.bundle = 'field_opg_primary_author'
+EOQ;
+  $rows = array();
+  $bind = array(':gid' => $gid);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $rows[$row->nid] = $row;
+    }
+  }
+  if ($rows) {
+    $participants['primaries'] = array(
+      'title' => 'Non-Editing Primary Authors',
+      'names' => array(),
+    );
+    $paids = array();
+    foreach ($rows as $row) {
+      $entity_type = $row->entity_type;
+      if ($row->field_opg_not_pa_value) {
+        $paids[] = $row->entity_id;
+      }
+    }
+    if ($paids and $entities = entity_load($entity_type, $paids)) {
+      foreach ($entities as $entity) {
+        $wrapper = entity_metadata_wrapper($entity_type, $entity);
+        $first = isset($wrapper->field_opg_pa_first) ? $wrapper->field_opg_pa_first->value() : '';
+        $last = isset($wrapper->field_opg_pa_last) ? $wrapper->field_opg_pa_last->value() : '';
+        $email = isset($wrapper->field_opg_pa_email) ? $wrapper->field_opg_pa_email->value() : '';
+        $name = trim(trim($first) . ' ' . trim($last));
+        $row = (object) array(
+          'uid' => 0,
+          'name' => $name,
+          'mail' => $email,
+          'realname' => $name,
+        );
+        $participants['primaries']['names'][$email] = $row;
+      }
+    }
+  }
+
+  // voters
+
+  $group_novote_node = isset($grapper->field_opg_novote_node) ? (bool)$grapper->field_opg_novote_node->raw() : FALSE;
+  $group_novote_comment = isset($grapper->field_opg_novote_comment) ? (bool)$grapper->field_opg_novote_comment->raw() : FALSE;
+  $voters = NULL;
+  if (!$group_novote_node or !$group_novote_comment) {
+    $widgets = variable_get(RATE_VAR_WIDGETS, array());
+    foreach ($widgets as $widget_id => $widget) {
+      if (array_intersect($types, $widget->node_types)) {
+        // node voting is enabled
+        $voters = array();
+        break;
+      }
+      if (array_intersect($types, $widget->comment_types)) {
+        // comment voting is enabled
+        $voters = array();
+        break;
+      }
+    }
+  }
+
+  if (isset($voters)) {
+    $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {users} u
+  left join {realname} r on u.uid = r.uid
+where u.uid > 0
+and u.uid in (
+  select v.uid from {votingapi_vote} v
+  join {node} n on v.entity_type = 'node' and v.entity_id = n.nid
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+)
+order by realname
+EOQ;
+    if ($result = db_query($sql, array(':gid' => $gid))) {
+      foreach ($result as $row) {
+        $voters[$row->mail] = $row;
+      }
+    }
+    $participants['voters'] = array(
+      'title' => 'Voters',
+      'names' => $voters,
+    );
+  }
+
+  $output .= theme('op_common_participants', array('type' => $group_name, 'participants' => $participants));
+
+  return $output;
+}
+
+/**
+ * Load the current Open Proposal Group
+ *
+ * @todo This won't work with non-node-based groups
+ */
+function opg_core_current_opg($data=NULL) {
+  $opg = NULL;
+  if ($group = og_context()) {
+    // fine
+  }
+  elseif (is_numeric($data)) {
+    if ($row = db_query('select distinct gid, group_type from {og_membership} where gid = :gid', array(':gid' => $data))->fetchObject()) {
+      $group = (array)$row;
+    }
+  }
+  else {
+    $args = arg();
+    if (is_array($data) and !empty($data['node']) and is_object($data['node'])) {
+      $node = $data['node'];
+    }
+    elseif ($args[0] == 'node' and is_numeric($args[1]) and !drupal_is_front_page()) {
+      $node = node_load($args[1]);
+    }
+    elseif ($args[0] == 'comment' and is_numeric($args[2])) {
+      $node = node_load($args[2]);
+    }
+    elseif (!empty($_REQUEST['view_args']) and is_numeric($_REQUEST['view_args'])) {
+      $node = node_load($_REQUEST['view_args']);
+    }
+    elseif ($args[0] == 'opg-core' and is_numeric($args[1])) {
+      $node = node_load($args[1]);
+    }
+    if (!empty($node)) {
+      if ($result = db_query('select distinct gid, group_type from {og_membership} where ((entity_type = :entity_type and etid = :nid) or (group_type = :entity_type and gid = :nid))', array(':entity_type' => 'node', ':nid' => $node->nid))) {
+        foreach ($result as $row) {
+          $group = (array)$row;
+          break;
+        }
+      }
+    }
+  }
+  if ($group) {
+    $opg = opg_core_load_opg($group);
+  }
+  else {
+    $log = array(
+      'data' => $data,
+      'args' => $args,
+      '_REQUEST' => $_REQUEST,
+    );
+    dpm($log, __FUNCTION__ . ' unable to load current opg');
+    object_log(__FUNCTION__ . '_load_fail', $log);
+  }
+  return $opg;
+}
+
+/**
+ * Load an Open Proposal Group
+ */
+function opg_core_load_opg(array $group) {
+  $opgs = &drupal_static(__FUNCTION__, array());
+
+  if (empty($group['group_type']) or empty($group['gid'])) {
+    user_error('Unable to load invalid OPG group', E_USER_WARNING);
+    dpm($group, 'Invalid group');
+    return FALSE;
+  }
+  $group_type = $group['group_type'];
+  $gid = $group['gid'];
+  if (!empty($opgs[$group_type][$gid])) {
+    return $opgs[$group_type][$gid];
+  }
+
+  if ($entity = entity_load_single($group_type, $gid)) {
+    $opg = $group;
+    $opg['entity'] = $entity;
+  }
+  else {
+    user_error('Unable to load OPG group entity', E_USER_WARNING);
+    dpm(compact('group', 'entity'), 'Invalid group entity');
+    return FALSE;
+  }
+
+  $wrapper = entity_metadata_wrapper($group_type, $entity);
+  // rather than define some bogus "name" value, just don't have one and see how it goes
+  $uri = entity_uri($group_type, $entity);
+  $opg['path'] = url($uri['path'], array('absolute' => FALSE) + $uri['options']);
+
+  $opg['group_content_type'] = $wrapper->getBundle();
+  $opg['label'] = $wrapper->label();
+
+  $opg['node_type'] = $opg['post_type'] = opg_core_get_post_type($opg);
+  $opg['post_type_name'] = node_type_get_name($opg['post_type']);
+  $opg['login_type'] = opg_core_get_login_type($opg);
+
+  opg_core_get_groupword($opg);
+  opg_core_get_groupwords($opg);
+
+  opg_core_get_noun($opg);
+  opg_core_get_nouns($opg);
+
+  // dependent on above
+  $opg['postwords'] = opg_core_get_postwords($opg);
+
+  // i believe we can keep using this common function
+  $opg['login'] = op_common_op_login_load($opg['login_type']);
+
+  // these, more doubtful, but let's see
+  $opg['login']->text = op_common_op_login_text($opg);
+  // the default
+  $opg['create_text'] = op_common_op_create_text($opg['post_type'], $opg['login_type'], $opg['login'], NULL, $opg['nouns']);
+
+  $opgs[$group_type][$gid] = $opg;
+
+  return $opg;
+}
+
+function opg_core_get_entity(&$opg) {
+  if (empty($opg['entity'])) {
+    if (!empty($opg['group_type']) and !empty($opg['gid'])) {
+      if ($group_entity = entity_load_single($opg['group_type'], $opg['gid'])) {
+        $opg['entity'] = $group_entity;
+      }
+      else {
+        dpm(compact('opg','group_entity'), __FUNCTION__ . ' unable to load entity');
+      }
+    }
+    else {
+      // dpm(compact('opg'), __FUNCTION__ . ' empty group type and/or id');
+    }
+  }
+  return isset($opg['entity']) ? $opg['entity'] : NULL;
+}
+
+function opg_core_get_groupword(&$opg) {
+  $groupword = variable_get('opg_core_default_groupword', 'Forum');
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_groupword) and $field_value = $wrapper->field_opg_groupword->value()) {
+      $groupword = $field_value;
+    }
+  }
+  $opg['groupword'] = $groupword;
+  $opg['ucgroupword'] = strtoupper($opg['groupword']);
+  $opg['lcgroupword'] = strtolower($opg['groupword']);
+
+  $article = preg_match('/^[aeiou]/i', $opg['lcgroupword']) ? 'An' : 'A';
+  $opg['groupword_article'] = $article;
+  $opg['lcgroupword_article'] = strtolower($article);
+  $opg['ucgroupword_article'] = strtoupper($article);
+
+  return $groupword;
+}
+
+function opg_core_get_groupwords(&$opg) {
+  if (empty($opg['groupword'])) {
+    $opg['groupword'] = opg_core_get_groupword($opg);
+  }
+  $groupwords = NULL;
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_groupwords)) {
+      $groupwords = $wrapper->field_opg_groupwords->value();
+    }
+  }
+  if (empty($groupwords)) {
+    if (substr($opg['groupword'], -3) == 'ity') {
+      $groupwords = substr($opg['groupword'], 0, -1) . 'ies';
+    }
+    else {
+      $groupwords = $opg['groupword'] . 's';
+    }
+  }
+
+  $opg['groupwords'] = $groupwords;
+  $opg['ucgroupwords'] = strtoupper($opg['groupwords']);
+  $opg['lcgroupwords'] = strtolower($opg['groupwords']);
+
+  return $groupwords;
+}
+
+function opg_core_get_noun(&$opg) {
+  $noun = variable_get('opg_core_default_noun', 'Proposal');
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_noun) and $field_value = $wrapper->field_opg_noun->value()) {
+      $noun = $field_value;
+    }
+  }
+  $opg['noun'] = $noun;
+  $opg['ucnoun'] = strtoupper($opg['noun']);
+  $opg['lcnoun'] = strtolower($opg['noun']);
+
+  $article = preg_match('/^[aeiou]/i', $opg['lcnoun']) ? 'An' : 'A';
+  $opg['noun_article'] = $article;
+  $opg['lcnoun_article'] = strtolower($article);
+  $opg['ucnoun_article'] = strtoupper($article);
+
+  return $noun;
+}
+
+function opg_core_get_nouns(&$opg) {
+  if (empty($opg['noun'])) {
+    $opg['noun'] = opg_core_get_noun($opg);
+  }
+  $nouns = NULL;
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_nouns)) {
+      $nouns = $wrapper->field_opg_nouns->value();
+    }
+  }
+  if (empty($nouns)) {
+    $nouns = $opg['noun'];
+    if (preg_match('/[^aeiou]o$/', $nouns)) {
+      /// potatoes
+      $nouns .= 'es';
+    }
+    elseif (preg_match('/[^aeiou]y$/', $nouns)) {
+      // categories
+      $nouns = substr($nouns, 0, -1) . 'ies';
+    }
+    elseif (preg_match('/(s|x|z|sh|ch)$/', $nouns)) {
+      // witches
+      // kisses
+      // bushes
+      $nouns .= 'es';
+    }
+    else {
+      $nouns .= 's';
+    }
+  }
+  $opg['nouns'] = $nouns;
+  $opg['ucnouns'] = strtoupper($opg['nouns']);
+  $opg['lcnouns'] = strtolower($opg['nouns']);
+
+  return $nouns;
+}
+
+function opg_core_get_login_type(&$opg) {
+  $login_type = 'all';
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_login_type) and $field_value = $wrapper->field_opg_login_type->raw()) {
+      $login_type = $field_value;
+    }
+  }
+  return $login_type;
+}
+
+/**
+ * Retrieve the primary bundle name for group content in an Open Proposal Group
+ *  (if set)
+ */
+function opg_core_get_post_type(&$opg) {
+  $post_type = 'page';
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_post_type) and $field_value = $wrapper->field_opg_post_type->raw()) {
+      $post_type = $field_value;
+    }
+  }
+  return $post_type;
+}
+
+/**
+ * Retrieve the English text to be used for the Save (submit) button for group content in an Open Proposal Group
+ */
+function opg_core_get_postwords(&$opg) {
+  $postwords = 'Save';
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_postwords) and $field_value = $wrapper->field_opg_postwords->value()) {
+      $postwords = $field_value;
+    }
+  }
+  return $postwords;
+}
+
+/**
+ * Retrieve the revision tab display setting for an Open Proposal Group
+ *  (if set)
+ */
+function opg_core_get_revision_tab(&$opg) {
+  $revision_tab = 0;
+  opg_core_get_entity($opg);
+  if (!empty($opg['entity'])) {
+    $wrapper = entity_metadata_wrapper($opg['group_type'], $opg['entity']);
+    if (isset($wrapper->field_opg_revision_tab) and $field_value = $wrapper->field_opg_revision_tab->raw()) {
+      $revision_tab = $field_value;
+    }
+  }
+  return $revision_tab;
+}
+
+/**
+ * Count stuff for report headers / footers
+ *  Used by tokens as well.
+ */
+function opg_core_report_counts($group, $ctype = NULL) {
+
+  if (empty($group['group_type']) or empty($group['gid'])) {
+    dpm(compact('group','ctype'), __FUNCTION__ . ' invalid group');
+    return FALSE;
+  }
+  else {
+    $group_type = $group['group_type'];
+    $gid = $group['gid'];
+  }
+
+  $status_name = null;
+  if (empty($group['entity'])) {
+    $group_entity = entity_load_single($group_type, $gid);
+    $group['entity'] = $group_entity;
+  }
+  else {
+    $group_entity = $group['entity'];
+  }
+  if ($group_entity) {
+    $wrapper = entity_metadata_wrapper($group_type, $group_entity);
+  }
+  else {
+    dpm(compact('group','ctype'), __FUNCTION__ . ' could not load group entity');
+    return FALSE;
+  }
+  if (isset($wrapper->field_opg_status_voc) and $status_vid = $wrapper->field_opg_status_voc->raw()) {
+    if ($vocabulary = taxonomy_vocabulary_load($status_vid)) {
+      $status_name = $vocabulary->machine_name;
+    }
+    else {
+      dpm(compact('vocabulary','status_vid','group','ctype'), __FUNCTION__ . ' could not load status vocabulary for group entity');
+    }
+  }
+  else {
+    dpm(compact('status_vid','group','ctype'), __FUNCTION__ . ' could not load status vocabulary id for group entity');
+  }
+
+  $counts = array(
+    'proposals' => 'n/a',
+    'comments' => 'n/a',
+    'max_node_comments' => 'n/a',
+    'by_status' => array(
+      'Withdrawn' => 'n/a',
+    ),
+    'changed' => 'n/a',
+    'commenters' => 'n/a',
+    'voters' => 'n/a',
+  );
+
+  $excluded = array(
+    'Administrative',
+  );
+
+  opg_core_calculate_report_counts($counts, $gid, $status_name, $excluded);
+
+  if ($ctype) {
+    return isset($counts[$ctype]) ? $counts[$ctype] : FALSE;
+  }
+
+  return $counts;
+}
+
+/**
+ * Count stuff for Open Proposal Groups report headers / footers
+ *
+ * @param $counts
+ *    A reference to an array of types of counts to be done
+ * @param $gid
+ *    An Organic Groups group ID to be counted
+ * @param $status_name
+ *    An optional machine name for a vocabulary used by certain kinds of counts
+ * @param $excluded
+ *    An optional term or list of terms for the $status_name vocabulary
+ *    to use in excluding nodes from certain counts
+ * @param $excluded
+ *    An optional content type name or list of names 
+ *    to use in excluding nodes from certain counts
+ */
+function opg_core_calculate_report_counts(&$counts, $gid, $status_name, $excluded = null, $excluded_types = null) {
+  if ($excluded_types === NULL) {
+    $excluded_types = array(
+      'opg_admin_post',
+      'page',
+    );
+  }
+  else {
+    $excluded_types = (array)$excluded_types;
+  }
+
+  $excluded_nids = array();
+  $exclude_sql = null;
+  if ($status_name and $excluded) {
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'taxonomy_term')
+      ->entityCondition('bundle', $status_name)
+      ->propertyCondition('name', (array)$excluded, 'IN')
+    ;
+    $result = $query->execute();
+    if (isset($result['taxonomy_term']) and is_array($result['taxonomy_term'])) {
+      foreach ($result['taxonomy_term'] as $tid => $item) {
+        $excluded_nids += taxonomy_select_nodes($tid, false);
+      }
+    }
+  }
+  if ($excluded_types) {
+    $sql = <<<EOQ
+select n.nid
+from {node} n
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+where n.type in (:types)
+EOQ;
+    $bind = array(':gid' => $gid, ':types' => $excluded_types);
+    if ($result = db_query($sql, $bind)) {
+      foreach ($result as $row) {
+        $excluded_nids[$row->nid] = $row->nid;
+      }
+    }
+  }
+  if ($excluded_nids) {
+    $exclude_sql = ' and n.nid not in (' . implode(', ', $excluded_nids) . ') ';
+  }
+
+  if (isset($counts['proposals']) or isset($counts['comments'])) {
+    $sql = <<<EOQ
+select count(distinct n.nid) as proposal_count, count(distinct c.cid) as comment_count
+from {node} n
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  left join {comment} c on n.nid = c.nid
+where n.status = 1
+EOQ;
+    $bind = array(':gid' => $gid);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      if (isset($counts['proposals'])) {
+        $counts['proposals'] = $row->proposal_count;
+      }
+      if (isset($counts['comments'])) {
+        $counts['comments'] = $row->comment_count;
+      }
+    }
+  }
+
+  if (isset($counts['commenters'])) {
+    $sql = <<<EOQ
+select count(distinct if(u.mail > '', u.mail, c.mail)) as commenter_count
+from {comment} c
+  join {node} n on c.nid = n.nid
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  left join {users} u on c.uid = u.uid
+where n.status = 1
+and (u.mail > '' or c.mail > '')
+EOQ;
+    $bind = array(':gid' => $gid);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['commenters'] = $row->commenter_count;
+    }
+  }
+
+  if (isset($counts['changed'])) {
+    $sql = <<<EOQ
+select count(distinct n.nid) as changed_count
+from {node} n
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+  join {node_revision} r on n.nid = r.nid and n.vid != r.vid
+where n.status = 1
+EOQ;
+    $bind = array(':gid' => $gid);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['changed'] = $row->changed_count;
+    }
+  }
+
+  if (isset($counts['max_node_comments'])) {
+    $sql = <<<EOQ
+select max(comment_count) as max_node_comment_count
+from (
+  select n.nid, count(distinct c.cid) as comment_count
+  from {node} n
+    join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+    left join {comment} c on n.nid = c.nid
+  where n.status = 1
+EOQ;
+    $bind = array(':gid' => $gid);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    $sql .= <<<EOQ
+  group by nid
+) x
+EOQ;
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['max_node_comments'] = $row->max_node_comment_count;
+    }
+  }
+
+  if (isset($counts['by_status']) and $status_name) {
+    $sql = <<<EOQ
+select d.name as term_name, count(distinct x.nid) as term_count
+from
+  {taxonomy_vocabulary} v
+  join {taxonomy_term_data} d on d.vid = v.vid
+  left join {taxonomy_index} t on t.tid = d.tid
+  left join (
+    select n.nid from {node} n
+    join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+    where n.status = 1
+  ) x on x.nid = t.nid
+where v.machine_name = :status_name
+group by d.name
+EOQ;
+    $bind = array(':gid' => $gid, ':status_name' => $status_name);
+    if ($result = db_query($sql, $bind)) {
+      foreach ($result as $row) {
+        $counts['by_status'][$row->term_name] = $row->term_count;
+      }
+    }
+  }
+
+  if (isset($counts['voters'])) {
+    $sql = <<<EOQ
+select count(distinct a.uid) as voter_count
+from (
+  select uid, entity_id as nid from {votingapi_vote} where entity_type = 'node'
+  union
+  select votingapi_vote.uid, comment.nid from {votingapi_vote} join {comment} on entity_type = 'comment' and entity_id = cid
+) a
+  join {node} n on a.nid = n.nid
+  join {og_membership} o on n.nid = o.etid and o.entity_type = 'node' and o.gid = :gid
+where n.status = 1
+EOQ;
+    $bind = array(':gid' => $gid);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['voters'] = $row->voter_count;
+    }
+  }
+}
+
+/**
+ * Count Subscription module subscribers to a node
+ *
+ * @param $nid node ID
+ *
+ * @return An array of counts
+ *  total Unique subscribers
+ *  node  Subscribers to the node
+ *  group Subscribers to the group(s) the node belongs to
+ *  type  Subscribers to the node's content type
+ *
+ */
+function opg_core_node_subs($nid) {
+  $nidcounts = &drupal_static(__FUNCTION__, array());
+  if (empty($nid)) return;
+
+  if (!isset($nidcounts[$nid])) {
+    $node = node_load($nid);
+    if (subscriptions_content_type_is_blocked($node->type)) {
+      $nidcounts[$nid] = FALSE;
+      return $nidcounts[$nid];
+    }
+    $statics = variable_get('subscriptions_static_content_types', array());
+    $unlisteds = variable_get('subscriptions_unlisted_content_types', array());
+    if (!empty($statics[$node->type]) or !empty($unlisteds[$node->type])) {
+      $nidcounts[$nid] = FALSE;
+      return $nidcounts[$nid];
+    }
+
+    $counts = array();
+    $sql = <<<EOQ
+select sid, module, field, value, recipient_uid
+from {subscriptions}
+where (
+  (field = 'nid' and value = :nid)
+  or
+  (field = 'gid' and value in (select gid from {og_membership} where entity_type = 'node' and etid = :nid))
+  or
+  (field = 'type' and value in (select type from node where nid = :nid))
+)
+EOQ;
+    if ($result = db_query($sql, array(':nid' => $nid))) {
+      foreach ($result as $row) {
+        $counts['total'][$row->recipient_uid][$row->sid] = $row;
+        switch ($row->field) {
+          case 'nid':
+            $counts['node'][$row->recipient_uid][$row->sid] = $row;
+            break;
+          case 'gid':
+            $counts['group'][$row->recipient_uid][$row->sid] = $row;
+            break;
+          case 'type':
+            $counts['type'][$row->recipient_uid][$row->sid] = $row;
+            break;
+          default:
+            dpm($row, 'wtf is this row from subscriptions?');
+        }
+      }
+    }
+    $nidcounts[$nid] = $counts;
+  }
+  return $nidcounts[$nid];
+}
+
+/**
+ * Redirect to given content type node form with given OG group ref
+ *
+ * @param $gid
+ *  Organic Groups group ID
+ * @param $type
+ *  node content type
+ *
+ * @todo incorporate functionality to stop and show login links to anons
+ */
+function opg_core_node_create($gid, $type=NULL) {
+  global $user;
+
+  $jointext = $output = $debug = '';
+
+  $pauseall = false;
+  $disabled = false;
+
+  if ($opg = opg_core_current_opg($gid)) {
+    if (empty($type)) {
+      $type = $opg['post_type'];
+    }
+    if (!($create_text = ctsi_field_first_value($opg['group_type'], $opg['entity'], 'field_opg_postlogin'))) {
+      $create_text = $opg['create_text'];
+    }
+    $roles = og_roles($opg['group_type'], $opg['group_content_type'], $gid);
+    $rolenames = array_flip($roles);
+    $perms = og_role_permissions($roles);
+    $perm = 'create ' . $type . ' content';
+    if (!empty($perms[$rolenames['member']][$perm])) {
+      $subpath = 'group/' . $opg['group_type'] . '/' . $gid . '/subscribe';
+      $msg = t('Join %name to create your !noun', array('%name' => $opg['label'], '!noun' => $opg['lcnoun']));
+      $jointext = l($msg, $subpath, array('html' => TRUE, 'query' => array('destination' => $_GET['q'])));
+      // dpm("adding destination {$_GET['q']} to path {$subpath}");
+    }
+    else {
+      $jointext = '<h4>Creating ' . $opg['nouns'] . ' has been disabled.</h4>';
+      $debug .= '<h4>"member" does not have OG access to ' . $perm . '</h4>';
+      $disabled = true;
+    }
+    if (empty($user->uid)) {
+      $output .= '<h4>' . $create_text . '</h4>';
+    }
+    else {
+      $debug .= '<h4>You are logged in.</h4>';
+      $debug .= '<li>===== if you were not you would see this =========</li>';
+      $debug .= '<h4>'. $create_text . '</h4>';
+      if (!og_user_access($opg['group_type'], $gid, $perm)) {
+        if ($user_roles = og_get_user_roles($opg['group_type'], $gid, $user->uid)) {
+          if (current($user_roles) == 'non-member' or $disabled) {
+            $output .= '<h4>' . $jointext . '</h4>';
+          }
+          else {
+            if (in_array($user_roles, 'member')) {
+              $debug .= '<h4>You are already a member of this group.</h4>';
+            }
+            else {
+              $debug .= '<h4>You are neither non-member nor member? Whatever.</h4>';
+              dpm($user_roles, 'STraange roles');
+            }
+          }
+        }
+        else {
+          $debug .= '<h4>Unable to get your user roles.</h4>';
+          dpm(compact('opg', 'gid', 'user', 'user_roles'), 'Unable to get user roles for group');
+        }
+      }
+      else {
+        $debug .= '<h4>You do have OG access to ' . $perm . '</h4>';
+        $debug .= '<li>===== if you did not you would see this =========</li>';
+        $debug .= '<h4>' . $jointext . '</h4>';
+      }
+    }
+  }
+  else {
+    $debug .= '<h4>Unable to get current opg for ' . $gid . '<h4>';
+  }
+
+  if (empty($type)) {
+    dpm(compact('gid','type'), __FUNCTION__ . ' no type given');
+    $output .= '<p>No content type found - unable to proceed.</p>';
+    if ($pauseall) {
+      $output .= $debug;
+    }
+    return $output;
+  }
+
+  // $output .= ctsi_pause_anon($path, true);
+  // return $output;
+
+  // custom version
+
+  $path = 'node/add/' . str_replace('_', '-', $type);
+  $query = $_GET;
+  unset($query['q']);
+  $query['og_group_ref'] = $gid;
+
+  $url = null;
+
+  if (empty($output)) {
+    // hack to accommodate drupal_goto()
+    // - otherwise it sends people straight to their Final Destination
+    unset($_GET['destination']);
+
+    if (empty($pauseall) and empty($_REQUEST['pause']) and !variable_get('ctsi_create_page_stop_' . str_replace('-', '_', basename($path)), 0)) {
+      return drupal_goto($path, array('query' => $query));
+    }
+
+    // normally this never gets executed because of the goto
+    $url = url($path, array('query' => $query, 'absolute' => true));
+    $output .= $debug;
+    $output .= '<h4>Normally, you would have been redirected to ' . l($url, $url) . '</h4>';
+  }
+
+  return $output;
+}
+
+/**
+ * Utility function to return allowed values for post type field
+ *  "Group content" enabled content types other than "page"
+ *  Because Features+CCK can't revert PHP in field definition properly.
+ */
+function opg_core_post_types() {
+  $gcs = og_get_all_group_content_bundle();
+  unset($gcs['node']['page']);
+  return $gcs['node'];
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter()
+ *
+ *  Remove "Revisions" node tab from OPG content nodes if the Group is set that way
+ */
+function opg_core_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  global $user;
+
+  // dpm(compact('data','router_item','root_path'), __FUNCTION__);
+  // $...['data']['tabs'][0]['output'][1]['#link']['path']
+
+  $current_group = og_context();
+  if (count($router_item['map']) > 1 and $router_item['map'][0] == 'node' and is_object($router_item['map'][1])) {
+    $node = $router_item['map'][1];
+    if (isset($node->og_group_ref[$node->language][0]['target_id']) and $current_group['gid'] = $node->og_group_ref[$node->language][0]['target_id']) {
+      if (!empty($data['tabs'][0]['output'])) {
+        $tabs = $data['tabs'][0]['output'];
+        foreach ($tabs as $i => $tab) {
+          if ($tab['#link']['path'] == 'node/%/revisions') {
+            if (!node_access('update', $node) and opg_core_get_revision_tab($current_group)) {
+              unset($data['tabs'][0]['output'][$i]);
+            }
+          }
+        }
+        if (count($data['tabs'][0]['output']) == 1 and $data['tabs'][0]['output'][0]['#link']['path'] == 'node/%/view') {
+          unset($data['tabs'][0]['output'][0]);
+        }
+      }
+      else {
+        // no tabs
+        // dpm(compact('data','router_item','root_path','current_group'), __FUNCTION__ . ': no data[tabs][0][output]');
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_rate_widget_alter().
+ *
+ * Alter the rate widget before display.
+ *
+ * @param object $widget Widget object
+ * @param array $context
+ *   array(
+ *     'content_type' => $content_type,
+ *     'content_id' => $content_id,
+ *   );
+ */
+function opg_core_rate_widget_alter(&$widget, $context) {
+  // dpm(compact('widget','context'), __FUNCTION__);
+
+  if (empty($context['content_type']) or empty($context['content_id'])) {
+    return;
+  }
+  switch ($context['content_type']) {
+    case 'node':
+      $node = node_load($context['content_id']);
+      break;
+    case 'comment':
+      $comment = comment_load($context['content_id']);
+      $node = node_load($comment->nid);
+      break;
+  }
+  if (empty($node)) {
+    return;
+  }
+
+  $group = og_context();
+  $group_type = empty($group['group_type']) ? NULL : $group['group_type'];
+  $gid = empty($group['gid']) ? NULL : $group['gid'];
+  if ($handlers = og_context_handler_node($node)) {
+    if (count($handlers) > 1) {
+      if (empty($group['group_type']) or empty($handlers[$group['group_type']])) {
+        // no way to know which group to use, not active
+        return;
+      }
+    }
+    else {
+      if (empty($handlers[$group_type])) {
+        $gid = NULL;
+      }
+      $group_type = key($handlers);
+    }
+    if (count($handlers[$group_type]) > 1) {
+      if (!in_array($gid, $handlers[$group_type])) {
+        // no way to know which group to use, not active
+        return;
+      }
+    }
+    else {
+      $gid = current($handlers[$group_type]);
+    }
+  }
+  else {
+    // no groups
+    return;
+  }
+  $group_entity = entity_load_single($group_type, $gid);
+  $wrapper = entity_metadata_wrapper($group_type, $group_entity);
+  $hidevote = NULL;
+  switch ($context['content_type']) {
+    case 'node':
+      if (isset($wrapper->field_opg_novote_node)) {
+        if ($hidevote = $wrapper->field_opg_novote_node->raw()) {
+          $widget->node_display = $widget->teaser_display = 0; 
+        }
+      }
+      break;
+    case 'comment':
+      if (isset($wrapper->field_opg_novote_comment)) {
+        if ($hidevote = $wrapper->field_opg_novote_comment->raw()) {
+          $widget->comment_display = 0;
+        }
+      }
+      break;
+  }
+
+}
+
+/**
+ * Return array of options for a OG Subscriptions link for given group
+ */
+function opg_core_group_sublink($gid) {
+  global $user;
+
+  $destination = ctsi_destination();
+  $destination = ctsi_qdest($destination);
+
+  $group = array('group_type' => 'node', 'gid' => $gid);
+  $opg = opg_core_load_opg($group);
+  $titles = array(
+    'del' => t('Change follow preferences'),
+    'add' => t('Follow this !groupword', array('!groupword' => $opg['groupword'])),
+  );
+
+  if (empty($user->uid)) {
+    $sublink = array(
+      'title' => $titles['add'],
+      'href' => 'goto/subscribe/add/group/' . $gid,
+      'html' => TRUE,
+      'query' => array('destination' => $destination),
+    );
+    // dpm("adding destination {$destination} to path {$sublink['href']}");
+  }
+  else {
+    $op = subscriptions_get_subscription($user->uid, 'node', 'gid', $gid) ? 'del': 'add';
+    $title = $titles[$op];
+    $sublink = array(
+      'title' => $title,
+      'href' => 'subscriptions/' . $op . '/group/' . $gid,
+      'html' => true,
+      'query' => array('destination' => $destination),
+    );
+    // dpm("adding destination {$destination} to path {$sublink['href']}");
+  }
+
+  $key = 'subscriptions_node_gid_' . $gid;
+  $links[$key] = $sublink;
+  drupal_alter(array('ctsi_node_sublinks'), $links, $opg['entity']);
+  // dpm($links, __FUNCTION__ . ': post alter');
+
+  return $links[$key];
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function opg_core_form_subscriptions_add_form_alter(array &$form, array &$form_state, $form_id) {
+  global $user;
+
+  // dpm(compact('form','form_state','form_id'), __FUNCTION__);
+  if (!empty($user->uid)) {
+    $form['#submit'][] = 'opg_core_subscriptions_add_form_submit';
+  }
+  else {
+    dpm($user, 'how is anon subscribing to a thing?');
+  }
+}
+
+/**
+ * Custom submit handler for Subscriptions add form
+ *  No other way to catch subscriptions, alas.
+ */
+function opg_core_subscriptions_add_form_submit(array $form, array &$form_state) {
+  global $user;
+
+  if (empty($user->uid)) return;
+
+  if ($form_state['values']['stype'] == 'group') {
+    if ($group = opg_core_gid_to_group($form_state['values']['sid'])) {
+      opg_core_autojoin($group['group_type'], $group['gid']);
+    }
+  }
+}
+
+/**
+ * Add current user to a group if not already a member
+ */
+function opg_core_autojoin($group_type, $gid) {
+  global $user;
+
+  if (empty($user->uid)) {
+    dpm(compact('user','group_type','gid'), __FUNCTION__ . ': called for anon - ?');
+    return;
+  }
+
+  $groups = og_get_groups_by_user($user, $group_type);
+  if (!isset($groups[$gid])) {
+    og_group($group_type, $gid);
+    $entity = entity_load_single($group_type, $gid);
+    if (isset($entity->title)) {
+      $name = $entity->title;
+    }
+    else {
+      $wrapper = entity_metadata_wrapper($group_type, $entity);
+      $name = $entity->label();
+    }
+    drupal_set_message(t('You have joined %name', array('%name' => $name)));
+  }
+}
+function opg_core_create_follow_submit(array $form, array &$form_state) {
+  global $user;
+
+  if (empty($user->uid)) return;
+
+  // dpm(compact('form','form_state'), __FUNCTION__);
+  if (!empty($form_state['values']['opg_follow']['signmeup'])) {
+    $subs_state = array('values' => $form_state['values']['opg_follow']['subsform']);
+    module_load_include('inc', 'subscriptions', 'subscriptions.admin');
+    subscriptions_add_form_submit($form, $subs_state);
+  }
+  else {
+    // dpm('you did not sign up');
+  }
+}
+
+/**
+ * Implements hook_votingapi_preset_votes().
+ */
+function opg_core_votingapi_preset_votes_alter(&$votes) {
+  global $user;
+
+  if (empty($user->uid)) return;
+
+  // object_log(__FUNCTION__ . '_' . time(), $votes);
+
+  foreach ($votes as $vote) {
+    if (isset($vote['value']) and $vote['value'] == 1 and $vote['entity_type'] == 'node') {
+      if (!subscriptions_get_subscription($user->uid, 'node', 'nid', $vote['entity_id'])) {
+        subscriptions_write_subscription('node', 'nid', $vote['entity_id'], -1, $user->uid, _subscriptions_get_setting('send_interval', $user), 1, 1);
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_comment_insert().
+ */
+function opg_core_comment_insert($comment) {
+  global $user;
+
+  if (empty($user->uid)) return;
+
+  if (!subscriptions_get_subscription($user->uid, 'node', 'nid', $comment->nid)) {
+    subscriptions_write_subscription('node', 'nid', $comment->nid, -1, $user->uid, _subscriptions_get_setting('send_interval', $user), 1, 1);
+  }
+}
+
+/**
+ * Check active OPG group phase(s) and do stuff as appropriate.
+ *  @todo Have to check if the type of the active phase has changed, too.
+ */
+function opg_core_process_active_phase($group) {
+  $entity = opg_core_get_entity($group);
+  $entity_type = $group['group_type'];
+  // dpm($entity,  __FUNCTION__);
+  $wrapper = entity_metadata_wrapper($entity_type, $entity);
+  if (!isset($wrapper->field_opg_phases)) {
+    // dpm('no phases field');
+    return;
+  }
+  $bundle = $wrapper->getBundle();
+  // dpm($wrapper->field_opg_phases->value(), 'phases for ' . $wrapper->getIdentifier() . ' ' . $wrapper->vid->value());
+  $active = array();
+  $phase_type = null;
+  foreach ($wrapper->field_opg_phases->getIterator() as $i => $phase) {
+    // dpm('phase ' . $phase->getIdentifier() . ' ' . $phase->revision_id->value() . ' active? ' . $phase->field_opg_phase_active->value() . ' type? ' . $phase->field_opg_phase_type->raw());
+    $phase_type = $phase->type();
+    if ($phase->field_opg_phase_active->value() == 1) {
+      if ($type = $phase->field_opg_phase_type->raw()) {
+        $active[$type] = $type;
+      }
+    }
+  }
+  // dpm($active, 'active on line ' . __LINE__);
+  if (isset($entity->original)) {
+    // entity wrapper can't get correct revisions of non-current field collections - gotta do it the hard way
+    if (empty($phase_type)) {
+      // dpm($entity, 'no phase type known');
+    }
+    else {
+      $oactive = array();
+      if (isset($entity->original->field_opg_phases[$entity->original->language])) {
+        foreach ($entity->original->field_opg_phases[$entity->original->language] as $item) {
+          if ($revision = entity_revision_load($phase_type, $item['revision_id'])) {
+            $phase = entity_metadata_wrapper($phase_type, $revision);
+            // dpm('original phase ' . $phase->getIdentifier() . ' ' . $phase->revision_id->value() . ' active? ' . $phase->field_opg_phase_active->value() . ' type? ' . $phase->field_opg_phase_type->raw());
+            if ($phase->field_opg_phase_active->value() == 1) {
+              if ($type = $phase->field_opg_phase_type->raw()) {
+                $oactive[$type] = $type;
+              }
+            }
+          }
+        }
+      }
+      // dpm($oactive, 'original active');
+      if ($active == $oactive) {
+        // dpm('no change to the active phase type(s)');
+        return;
+      }
+    }
+  }
+  else {
+    // dpm('no original values available');
+  }
+  // dpm($active, 'active on line ' . __LINE__);
+  if ($active) {
+    $alter_perms = true;
+    if (isset($wrapper->field_opg_post_type)) {
+      $post_type = $wrapper->field_opg_post_type->raw();
+    }
+    else {
+      dpm(compact('group','entity'), 'No post type defined for group - not known what group content types are applicable, cannot change permissions');
+      $alter_perms = false;
+    }
+
+    // note: if you change the group to use custom roles and permissions, we can't react to that here.
+    //  the new custom role IDs may not even exist yet. you have to change the settings,
+    //  and then maybe we can alter the custom permissions here.
+
+    if ($post_type and og_is_group_default_access($entity_type, $group['gid'])) {
+      $siblings = opg_core_get_post_type_groups($entity_type, $bundle, $post_type);
+      foreach ($siblings as $sibling) {
+        if ($sibling['gid'] != $group['gid']) {
+          if (og_is_group_default_access($sibling['group_type'], $sibling['gid'])) {
+            // more than one group shares this content type using default permissions
+            // so we cannot change permissions here
+            // dpm($sibling, $post_type . ' is shared by multiple groups using default permissions - automatic changes are not possible');
+            $alter_perms = false;
+            break;
+          }
+        }
+      }
+    }
+    if ($alter_perms) {
+      $roles = og_roles($entity_type, $bundle, $group['gid']);
+      $rolenames = array_flip($roles);
+      $perms = og_role_permissions($roles);
+      // dpm(compact('post_type','roles','perms'), 'allowed to alter permissions');
+      $create_perm = 'create ' . $post_type . ' content';
+      $edit_own_perm = 'update own ' . $post_type . ' content';
+      $edit_any_perm = 'update any ' . $post_type . ' content';
+    }
+    foreach ($active as $type) {
+      if ($alter_perms) {
+        // dpm($type . ' phase is active - do permissions and whatnot as applicable');
+      }
+      else {
+        // dpm($type . ' phase is active - permission changes are not allowed, but other things may happen');
+      }
+
+  /*
+  * 1) Open Submission (posting new proposals is allowed, commenting/voting is open, if voting is enabled for the forum)
+  * 2) Open Improvement (updating proposals is allowed, adding new proposals is not allowed; commenting/voting is open)
+  * 3) Review (adding or editing proposals is not allowed, voting is disabled, commenting is open)
+  * 4) Awards Announcement/post-review/implementation phase (commenting still open, everything else is not allowed)
+  * 5) Archived – in this phase the forum is closed for any content changes. Commenting, voting, posting is closed. Forum is still visible to end users (members and non members).
+  */
+      $permchanges = array();
+      switch ($type) {
+        case 'submission':
+          foreach (array('non-member','member') as $rolename) {
+            if (empty($perms[$rolenames[$rolename]][$create_perm])) {
+              // dpm($type . ' phase is active - enable ' . $create_perm . ' for ' . $rolename);
+              $permchanges[$rolenames[$rolename]][$create_perm] = TRUE;
+            }
+            else {
+              // dpm($type . ' phase is active - ' . $create_perm . ' for ' . $rolename . ' already enabled');
+            }
+          }
+          break;
+        case 'improvement':
+          foreach (array('non-member','member') as $rolename) {
+            if (empty($perms[$rolenames[$rolename]][$create_perm])) {
+              // dpm($type . ' phase is active - disable ' . $create_perm . ' for ' . $rolename);
+              $permchanges[$rolenames[$rolename]][$create_perm] = FALSE;
+            }
+            else {
+              // dpm($type . ' phase is active - ' . $create_perm . ' for ' . $rolename . ' already disabled');
+            }
+          }
+          break;
+        case 'review':
+        case 'post-review':
+        case 'archived':
+          break;
+      }
+      // dpm($permchanges, 'permission changes');
+      foreach ($permchanges as $rid => $changes) {
+        og_role_change_permissions($rid, $changes);
+      }
+    }
+  }
+  else {
+    // dpm('no active phase or active phase(s) have no type');
+  }
+}
+
+/**
+ * Find all entities with field_opg_post_type set to given value
+ *  (Which presumably means, groups that are using the given content type)
+ */
+function opg_core_get_post_type_groups($entity_type, $bundle, $post_type) {
+  $groups = array();
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', $entity_type)
+    ->entityCondition('bundle', $bundle)
+    ->fieldCondition('field_opg_post_type', 'value', $post_type)
+  ;
+  $result = $query->execute();
+  // dpm(compact('entity_type','bundle','post_type','result'), __FUNCTION__);
+  foreach ($result as $type => $rows) {
+    foreach ($rows as $id => $row) {
+      $group = array('group_type' => $type, 'gid' => $id, 'bundle' => $row->type);
+      $groups[] = $group;
+    }
+  }
+  return $groups;
+}
+
+/**
+ * Find entities with active phases that are past their deadline,
+ *  and make the next phase (if exists) active
+ */
+function opg_core_expire_phases() {
+  // become admin, because some groups are completely hidden from anons
+  global $user;
+  $old_user = $user;
+  $user = user_load(1);
+  // $session = drupal_save_session();
+  // drupal_save_session(FALSE);
+
+  // because of course Drupal's "ISO" format is not standard PHP ISO 8601 date format 'c'
+  //  the phase is assumed to be active through the entire last day 
+  $now = date('Y-m-d') . 'T00:00:00';
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'field_collection_item')
+    ->entityCondition('bundle', 'field_opg_phases')
+    ->fieldCondition('field_opg_phase_end', 'value', $now, '<')
+    ->fieldCondition('field_opg_phase_active', 'value', 1)
+  ;
+  $result = $query->execute();
+  foreach ($result as $entity_type => $items) {
+    $entities = entity_load($entity_type, array_keys($items));
+    foreach ($entities as $entity) {
+      $erapper = entity_metadata_wrapper($entity_type, $entity);
+      // dpm('expired phase ' . $erapper->getIdentifier() . ' ' . $erapper->getBundle() . ' ' . $erapper->field_opg_phase_name->value());
+      if ($host = $entity->hostEntity()) {
+        $host_type = $entity->hostEntityType();
+        list($host_id, $host_revision_id, $host_bundle) = entity_extract_ids($host_type, $host);
+        $wrapper = entity_metadata_wrapper($host_type, $host);
+        // dpm('host ' . $host_type . ' ' . $host_bundle . ' #' . $host_id . ' v' . $host_revision_id . ' ' . $wrapper->label());
+        $phases = array();
+        $key = 0;
+        $expired_key = $next_key = -1;
+        foreach ($wrapper->field_opg_phases->getIterator() as $phase) {
+          // dpm('host phases phase ' . $phase->getIdentifier() . ' ' . $phase->field_opg_phase_name->value());
+          if ($phase->getIdentifier() == $entity->item_id) {
+            $expired_key = $key;
+            $next_key = $key + 1;
+            $phase->field_opg_phase_active->set(0);
+          }
+          elseif ($key == $next_key) {
+            $phase->field_opg_phase_active->set(1);
+          }
+          $key++;
+        }
+        $wrapper->revision->set(1);
+        $wrapper->save();
+      }
+      else {
+        user_error('Unable to get hostEntity for field_collection item ' . $erapper->getBundle() . ':' . $erapper->getIdentifier(), E_USER_WARNING);
+      }
+    }
+  }
+  // become whoever again
+  $user = $old_user;
+  // drupal_save_session($session);
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ *  for group content node forms
+ */
+function opg_core_form_comment_form_alter(&$form, &$form_state, $form_id) {
+  global $user;
+  // dpm(compact('user','form','form_state','form_id'), __FUNCTION__);
+
+  $form['#validate'][] = 'opg_core_form_comment_form_validate';
+
+  // comment author is not necessarily current user
+  $account = FALSE;
+  if (empty($form['is_anonymous']['#value'])) {
+    if (empty($form['uid']['#value'])) {
+      if (empty($form['author']['name']['#value'])) {
+        dpm(compact('user','form','form_state','form_id'), __FUNCTION__ . ': not anonymous, no uid, no username - ???');
+      }
+      else {
+        $account = user_load_by_name($form['author']['name']['#value']);
+      }
+    }
+    else {
+      $account = user_load($form['uid']['#value']);
+    }
+  }
+  else {
+    $account = drupal_anonymous_user();
+  }
+
+  $node = $form['#node'];
+
+  if (empty($account->uid)) {
+    // dpm(__FUNCTION__ . ': anon or fail');
+  }
+  elseif ($group = opg_core_node_in_group($node)) {
+    $user_groups = og_get_groups_by_user($account, $group['group_type']);
+    if (!isset($user_groups[$group['gid']])) {
+      // dpm(__FUNCTION__ . ': not a member');
+      if (!subscriptions_get_subscription($account->uid, 'node', 'gid', $group['gid'])) {
+        // dpm(__FUNCTION__ . ': not already following group');
+
+        $noun = opg_core_get_noun($group);
+        $groupword = opg_core_get_groupword($group);
+        $wrapper = entity_metadata_wrapper($group['group_type'], $group['entity']);
+        $label = $wrapper->label();
+
+        $form['opg_follow'] = array(
+          '#type' => 'fieldset',
+          '#title' => t('Follow This !groupword', array('!groupword' => $groupword)),
+          '#tree' => TRUE,
+        );
+        if (isset($form['options']['#weight'])) {
+          $form['opg_follow']['#weight'] = $form['options']['#weight'] + 1;
+        }
+        else {
+          $form['opg_follow']['#weight'] = 96;
+        }
+        $form['opg_follow']['signmeup'] = array(
+          '#type' => 'checkbox',
+          '#title' => t('I would like to follow %group !noun activity.', array('%group' => $label, '!noun' => $noun)),
+          '#default_value' => 1,
+        );
+        $form['opg_follow']['subsform'] = array(
+          '#type' => 'container',
+          '#states' => array(
+            'visible' => array(
+              ':input[name="opg_follow[signmeup]"]' => array('checked' => TRUE),
+            ),
+          ),
+        );
+        module_load_include('inc', 'subscriptions', 'subscriptions.admin');
+        $form['opg_follow']['subsform'] = subscriptions_add_form($form['opg_follow']['subsform'], $form_state, 'group', $group['gid']);
+        unset($form['opg_follow']['subsform']['submit']);
+       
+        $form['#submit'][] = 'opg_core_comment_follow_submit';
+      }
+      else {
+        // dpm(__FUNCTION__ . ': Already following group');
+      }
+    }
+    else {
+      // dpm(__FUNCTION__ . ': already a member');
+    }
+  }
+  else {
+    // dpm(__FUNCTION__ . ': no active group');
+  }
+}
+
+function opg_core_form_comment_form_validate($form, &$form_state) {
+  global $user;
+  // dpm(compact('user','form','form_state'), __FUNCTION__);
+
+  // either the comment author is anonymous or you are (through some strange alchemy)
+  $anon = TRUE;
+  if (empty($form_state['values']['is_anonymous'])) {
+    // dpm(__FUNCTION__ . ': comment form author is not anon');
+    if (empty($user->uid)) {
+      // dpm(__FUNCTION__ . ': current user is anon');
+    }
+    else {
+      // dpm(__FUNCTION__ . ': current user is not anon');
+      $anon = FALSE;
+    }
+  }
+  else {
+    // dpm(__FUNCTION__ . ': comment form author is anon');
+  }
+
+  if ($anon) {
+    // dpm(__FUNCTION__ . ': anonymous');
+    $node = $form['#node'];
+    if (!user_access('post comments', drupal_anonymous_user())) {
+      // this should be impossible
+      form_set_error('name', t('Anonymous users do not have permission to post comments on this site'));
+    }
+    elseif (!variable_get('ctsi_allow_anonymous_comments_' . $node->type, 1)) {
+      form_set_error('name', t('Anonymous comments are not allowed on these posts'));
+    }
+    elseif ($group = opg_core_node_in_group($node)) {
+      $group_entity = entity_load_single($group['group_type'], $group['gid']);
+      $wrapper = entity_metadata_wrapper($group['group_type'], $group_entity);
+      if (isset($wrapper->field_opg_noanoncom) and $wrapper->field_opg_noanoncom->raw()) {
+        form_set_error('name', t('Anonymous comments are not allowed in this group'));
+      }
+      else {
+        // dpm(__FUNCTION__ . ': anon comments are not disabled in the group');
+      }
+    }
+  }
+  else {
+    // dpm(__FUNCTION__ . ': not anonymous');
+  }
+}
+
+function opg_core_comment_follow_submit(array $form, array &$form_state) {
+  global $user;
+
+  if (empty($user->uid)) return;
+
+  // dpm(compact('form','form_state'), __FUNCTION__);
+  if (!empty($form_state['values']['opg_follow']['signmeup'])) {
+    $subs_state = array('values' => $form_state['values']['opg_follow']['subsform']);
+    opg_core_subscriptions_add_form_submit($form, $subs_state);
+    module_load_include('inc', 'subscriptions', 'subscriptions.admin');
+    subscriptions_add_form_submit($form, $subs_state);
+  }
+  else {
+    // dpm('you did not sign up');
+  }
+}
+
+/**
+ * Set up default value(s) for status taxonomy field
+ *  Called from node form alter function
+ */
+function opg_core_setup_status_default(&$form, $group, $field_name = 'field_opg_status') {
+  if ($group_entity = entity_load_single($group['group_type'], $group['gid'])) {
+    $wrapper = entity_metadata_wrapper($group['group_type'], $group_entity);
+  }
+  else {
+    dpm(compact('form','group','field_name'), __FUNCTION__ . ' ERROR: unable to load group entity');
+    return;
+  }
+  if (isset($wrapper->field_opg_status_voc)) {
+    if ($status_vid = $wrapper->field_opg_status_voc->raw()) {
+      if ($vocabulary = taxonomy_vocabulary_load($status_vid)) {
+        $status_name = $vocabulary->machine_name;
+      }
+      else {
+        dpm(compact('form','group','field_name','status_vid'), __FUNCTION__ . ' ERROR: unable to load vocabulary for status vocabulary field value ');
+        return;
+      }
+    }
+    else {
+      dpm(compact('form','group','field_name'), __FUNCTION__ . ' ERROR: no value found for status vocabulary field');
+      return;
+    }
+  }
+  else {
+    dpm(compact('form','group','field_name'), __FUNCTION__ . ' ERROR: status vocabulary field is not defined');
+    return;
+  }
+  if (empty($field_name)) {
+    $field_name = 'field_' . $status_name;
+  }
+  if ($defaults = op_common_taxdef($status_name)) {
+    // dpm(compact('form','group','field_name','vocabulary','defaults'), __FUNCTION__ . ' found status vocabulary #' . $status_vid . ' ' . $status_name);
+  }
+  else {
+    dpm(compact('form','group','field_name','vocabulary','defaults'), __FUNCTION__ . ' no defaults found for status vocabulary #' . $status_vid . ' ' . $status_name);
+    return;
+  }
+  if (isset($form[$field_name][$form[$field_name]['#language']]['#default_value'])) {
+    $tids = array();
+    $query = new EntityFieldQuery();
+    $result = $query->entityCondition('entity_type', 'taxonomy_term')
+      ->entityCondition('bundle', $status_name)
+      ->propertyCondition('name', $defaults, 'IN')
+      ->execute();
+    if (!empty($result['taxonomy_term'])) {
+      // dpm($result, 'found default terms in db');
+      foreach ($result['taxonomy_term'] as $tid => $item) {
+        $tids[] = $tid;
+        if (empty($form[$field_name][$form[$field_name]['#language']]['#multiple'])) {
+          break;
+        }
+      }
+    }
+    else {
+      dpm($result, 'did not found default terms in db');
+    }
+    if ($tids) {
+      $form[$field_name][$form[$field_name]['#language']]['#default_value'] = $tids;
+      // dpm(compact('result','tids'), 'set default tids from db');
+    }
+    else {
+      dpm(compact('result','tids'), 'no default tids from db');
+    }
+  }
+  else {
+    dpm(compact('form','group','field_name','vocabulary','defaults','status_vid','status_name'), __FUNCTION__ . ' ERROR: did not find field in form');
+  }
+}
+
+/**
+ * Implements hook_block_info().
+ */
+function opg_core_block_info() {
+  $blocks = array();
+  $blocks['opg_core_taxo_block'] = array(
+    'info' => t('OPG Core Taxonomy Block'),
+  );
+  return $blocks;
+}
+/**
+ * Implements hook_block_view().
+ */
+function opg_core_block_view($delta='') {
+  $output = array();
+  switch ($delta) {
+    case 'opg_core_taxo_block':
+      $vocabularies = array();
+      if ($group = og_context()) {
+        $vids = $types = $vfieldnames = $taxo_blocks = $tagvids = $tagnames = array();
+        $status_vid = $post_type = NULL;
+        opg_core_get_entity($group);
+        $wrapper = entity_metadata_wrapper($group['group_type'], $group['entity']);
+        if (isset($wrapper->field_opg_taxo_blocks) and $taxo_blocks_text = $wrapper->field_opg_taxo_blocks->value()) {
+          foreach (array_filter(array_map('trim', explode("\n", $taxo_blocks_text))) as $tbline) {
+            $tblparts = explode('|', $tbline);
+            $tblname = array_shift($tblparts);
+            $taxo_blocks[$tblname] = array_shift($tblparts);
+            if ($tbltags = array_shift($tblparts) and $tbltags == 'inline') {
+              $tagnames[$tblname] = $tblname;
+            }
+          }
+        }
+        if (isset($wrapper->field_opg_status_voc) and $vid = $wrapper->field_opg_status_voc->raw()) {
+          $vids[$vid] = $status_vid = $vid;
+        }
+        if (isset($wrapper->field_opg_post_type) and $type = $wrapper->field_opg_post_type->raw()) {
+          $post_type = $types[$type] = $type;
+          $post_fields = field_info_instances('node', $post_type);
+        }
+        if ($result = db_query('select distinct n.type from node n join og_membership o on o.entity_type = :entity_type and o.etid = n.nid where o.gid = :gid', array(':entity_type' => 'node', ':gid' => $group['gid']))) {
+          foreach ($result as $row) {
+            $types[$row->type] = $row->type;
+          }
+        }
+        $field_map = field_info_field_map();
+        $vnames = array();
+        foreach ($field_map as $field_name => $map) {
+          if (
+          ($map['type'] == 'taxonomy_term_reference' or $map['type'] == 'entityreference')
+          and isset($map['bundles']['node']) and array_intersect($types, $map['bundles']['node'])
+          ) {
+            foreach (opg_core_field_vocabulary_names($field_name) as $vname) {
+              $vnames[$vname] = $vname;
+              if (!empty($post_fields[$field_name]['label'])) {
+                $vfieldnames[$vname] = $post_fields[$field_name]['label'];
+              }
+            }
+          }
+        }
+
+        if ($vnames) {
+          $query = new EntityFieldQuery();
+          $query->entityCondition('entity_type', 'taxonomy_vocabulary')
+            ->propertyCondition('machine_name', $vnames)
+          ;
+          if ($result = $query->execute()) {
+            foreach ($result as $entity_type => $ids) {
+              foreach (array_keys($ids) as $vid) {
+                $vids[$vid] = $vid;
+              }
+            }
+          }
+        }
+
+        if ($ogv = og_vocab_relation_get_by_group($group['group_type'], $group['gid'])) {
+          foreach ($ogv as $ogvocab) {
+            $vids[$ogvocab->vid] = $ogvocab->vid;
+            if ($post_type) {
+              $og_vocab = og_vocab_load_og_vocab($ogvocab->vid, $group['group_type'], $post_type, NULL, TRUE);
+              // dpm($og_vocab, 'og_vocab from ' . implode(':', array($ogvocab->vid, $group['group_type'], $post_type, NULL, TRUE)));
+              if ($og_vocab->settings['widget_type'] == 'entityreference_autocomplete_tags') {
+                $tagvids[$ogvocab->vid] = $ogvocab->vid;
+              }
+            }
+          }
+        }
+
+        if ($vids) {
+          $vocabularies = entity_load('taxonomy_vocabulary', $vids);
+          if ($taxo_blocks) {
+            $tbvocs = $tbvids = array();
+            foreach ($vocabularies as $vid => $vocabulary) {
+              if (array_key_exists($vocabulary->machine_name, $taxo_blocks)) {
+                $tbvids[$vocabulary->machine_name] = $vid;
+              }
+              else {
+                // dpm($vocabulary->machine_name . ' not in taxo_blocks');
+              }
+            }
+
+            foreach ($taxo_blocks as $tbname => $tblabel) {
+              if (isset($tbvids[$tbname])) {
+                $vid = $tbvids[$tbname];
+                $tbvocs[$vid] = $vocabularies[$vid];
+                if ($tblabel) {
+                  $vfieldnames[$tbname] = $tblabel;
+                }
+              }
+              else {
+                // dpm($tbname . ' not in tbvids');
+              }
+            }
+            // dpm(compact('taxo_blocks','vids','vocabularies','tbvocs','tbvids'), __FUNCTION__);
+            $vocabularies = $tbvocs;
+          }
+          else {
+            // dpm(compact('taxo_blocks','vids','vocabularies'), __FUNCTION__ . ' no taxo blocks?');
+            // exclude Status vocabulary
+            if ($status_vid) {
+              unset($vocabularies[$status_vid]);
+            }
+          }
+        }
+        else {
+          // dpm(compact('taxo_blocks','vids'), __FUNCTION__ . ' no vids?');
+        }
+
+        if ($vocabularies) {
+          $query = new EntityFieldQuery();
+          $query->entityCondition('entity_type', 'taxonomy_term')
+            ->propertyCondition('vid', array_keys($vocabularies))
+          ;
+          $result = $query->execute();
+          if (!empty($result['taxonomy_term'])) {
+            $terms = entity_load('taxonomy_term', array_keys($result['taxonomy_term']));
+            foreach ($terms as $term) {
+              $vocabularies[$term->vid]->terms[$term->tid] = $term;
+            }
+          }
+        }
+
+        foreach ($vocabularies as $vid => $vocabulary) {
+          $vocabulary->field_label = empty($vfieldnames[$vocabulary->machine_name]) ? '' : $vfieldnames[$vocabulary->machine_name];
+          if (empty($vocabulary->field_label)) {
+            if (!empty($vocabulary->description) and strlen($vocabulary->description) < strlen($vocabulary->name)) {
+              $vocabulary->english = $vocabulary->description;
+            }
+            else {
+              $vocabulary->english = $vocabulary->name;
+            }
+          }
+          else {
+            $vocabulary->english = $vocabulary->field_label;
+          }
+          if (empty($vocabulary->terms)) {
+            $vocabulary->terms = array();
+          }
+          $vocabulary->tags = (isset($tagvids[$vid]) or isset($tagnames[$vocabulary->machine_name]));
+        }
+
+        // dpm(compact('opg','field_map', 'types','vnames','vids','vocabularies','terms'), __FUNCTION__);
+      }
+      $output['subject'] = '';
+      $output['content'] = theme('opg_core_taxo_block', compact('vocabularies'));
+      break;
+  }
+  return $output;
+}
+

@@ -1,0 +1,6 @@
+name = "CTSI LDAP Functions"
+version = "7.x-1.x-dev"
+project = "ctsi_ldap"
+package = "CTSI"
+core = 7.x
+

@@ -1,0 +1,584 @@
+<?php
+
+/**
+ * Query the UCSF LDAP service.
+ *
+ * @param string $match
+ *  The value to search for.
+ * @param string $key
+ *  (optional) A specific LDAP attribute to be searched.
+ *
+ * @return
+ *  An array of LDAP query results, including additional custom CTSI keys
+ *  matching custom Drupal user profile fields.
+ *
+ */
+function ctsi_ldap_query_people($match, $key = null, $force=FALSE) {
+  static $searchbase = 'ou=people,dc=ucsf,dc=edu';
+
+  if ($key) {
+    $query = "({$key}={$match})";
+  }
+  else {
+    $eppn = false;
+    if (is_numeric($match)) {
+      $len = strlen($match);
+      if ($len == 6) {
+        $eppn = $match . '@ucsf.edu';
+      }
+      elseif ($len >= 8 and strpos($match, '02') === 0) {
+        $eppn = substr($match, 2, 6) . '@ucsf.edu';
+      }
+    }
+    elseif (preg_match('/^[\d]{6}@ucsf.edu/', $match)) {
+      $eppn = $match;
+    }
+    if ($eppn) {
+      $query = "(edupersonprincipalname={$eppn})";
+    }
+    elseif ($pos = strpos($match, ' ')) {
+      $query = '(&(givenName=' . substr($match, 0, $pos) . '*)(sn=' . substr($match, $pos + 1) . '*))';
+    }
+    else {
+      $query = '(|(cn=*' . $match . '*)(mail=*' . $match . '*))';
+    }
+  }
+
+  // the word from ITS:
+//    Filter for people: You can add in additional search params,
+//    but because you can did not request access to students and residents,
+//    you must have this as part of the filter:
+//      (&(objectClass=ucsfEduPerson)(|(eduPersonAffiliation=staff)(eduPersonAffiliation=affiliate)))
+
+  $query = "(&(objectclass=ucsfEduPerson){$query}(|(edupersonaffiliation=staff)(edupersonaffiliation=affiliate)))";
+
+  if ($results = ctsi_ldap_lookup($searchbase, $query, $force)) {
+    foreach ($results as $dn => &$record) {
+      if (!empty($record['ucsfedupreferredgivenname'])) {
+        $record['ctsi_first'] = $record['ucsfedupreferredgivenname'];
+      }
+      elseif (!empty($record['givenname'])) {
+        $record['ctsi_first'] = $record['givenname'];
+      }
+      else {
+        $record['ctsi_first'] = '';
+      }
+      $record['ctsi_last'] = $record['sn'];
+
+      $record['ctsi_register_as'] = 'Other';
+    $record['ctsi_register_as_other'] = '';
+      if (isset($record['edupersonaffiliation'])) {
+        if (in_array('faculty', $record['edupersonaffiliation'])) {
+          $record['ctsi_register_as'] = 'UCSF Faculty';
+        }
+        elseif (in_array('staff', $record['edupersonaffiliation'])) {
+          $record['ctsi_register_as'] = 'UCSF Staff';
+        }
+        elseif (in_array('student', $record['edupersonaffiliation'])) {
+          // should never happen, but
+          $record['ctsi_register_as'] = 'UCSF Student';
+        }
+        else {
+          if (in_array('affiliate', $record['edupersonaffiliation'])) {
+            $record['ctsi_register_as_other'] = 'UCSF Affiliate';
+          }
+          elseif (in_array('rfs', $record['edupersonaffiliation'])) {
+            // should never happen, but
+            $record['ctsi_register_as_other'] = 'UCSF Resident Fellow';
+          }
+          else {
+            $record['ctsi_register_as_other'] = implode(', ', $record['edupersonaffiliation']);
+          }
+        }
+      }
+
+      if (!empty($record['o']) and $record['o'] != 'University of California, San Francisco') {
+        // it never is anything else, though, far as i can tell
+        $record['ctsi_org'] = $record['o'];
+      }
+      else {
+        $record['ctsi_org'] = 'UCSF';
+      }
+
+      if (!empty($record['ucsfeduworkingtitle'])) {
+        $record['ctsi_title'] = $record['ucsfeduworkingtitle'];
+      }
+      elseif (!empty($record['ucsfeduworkingtitle'])) {
+        $record['ctsi_title'] = $record['ucsfeduworkingtitle'];
+      }
+      else {
+        $record['ctsi_title'] = '';
+      }
+
+      $record['ctsi_mailbox'] = '';
+      if (!empty($record['postaladdress'])) {
+        $pam = array();
+        if (preg_match('/^Box ([\d]+)\$/', $record['postaladdress'], $pam)) {
+          $record['ctsi_mailbox'] = $pam[1];
+        }
+      }
+    }
+  }
+  else {
+    if ($results === FALSE) {
+      user_error("unable to run query {$searchbase}, {$query}");
+    }
+    else {
+      // user_error("no results for {$searchbase}, {$query}");
+    }
+  }
+
+  return $results;
+}
+
+/**
+ * Add department data to people LDAP results
+ */
+function ctsi_ldap_people_depts(&$people) {
+
+  // do one LDAP query, at least initially
+  $dnos = array();
+  foreach ($people as $record) {
+    foreach ((array) $record['departmentnumber'] as $dno) {
+      $dnos[$dno] = $dno;
+    }
+  }
+  ctsi_ldap_get_depts($dnos);
+  $deptlist = ctsi_ldap_deptlist();
+
+  foreach ($people as &$record) {
+    $record['ctsi_school'] = $record['ctsi_department'] = 'Other';
+    $dept = null;
+    if (!empty($record['ucsfeduprimarydepartmentnumber'])) {
+      if (isset($deptlist[$record['ucsfeduprimarydepartmentnumber']])) {
+        $dept = $deptlist[$record['ucsfeduprimarydepartmentnumber']];
+      }
+    }
+    else {
+      foreach ((array) $record['departmentnumber'] as $dno) {
+        if (isset($deptlist[$dno]) and !empty($deplist[$dno]['ctsi_school']) and !empty($deplist[$dno]['ctsi_department'])) {
+          $dept = $deptlist[$dno];
+          break;
+        }
+      }
+    }
+    if (!empty($dept['ctsi_school'])) {
+      $record['ctsi_school'] = $dept['ctsi_school'];
+    }
+    if (!empty($dept['ctsi_department'])) {
+      $record['ctsi_department'] = $dept['ctsi_department'];
+    }
+  }
+}
+
+/**
+ * Get a cached list of LDAP departments.
+ */
+function ctsi_ldap_get_deptlist() {
+  $depts = array();
+  if ($cache = cache_get('ctsi_ldap_deptlist')) {
+    if (is_array($cache->data)) {
+      $depts = $cache->data;
+    }
+    else {
+      user_error("Invalid deptlist value from cache: " . var_export($cache, true));
+      ctsi_ldap_set_deptlist($depts);
+    }
+  }
+  else {
+    ctsi_ldap_set_deptlist($depts);
+  }
+  return $depts;
+}
+
+/**
+ * Set a cached list of LDAP departments.
+ */
+function ctsi_ldap_set_deptlist($depts) {
+  if (is_array($depts)) {
+    // dpm("setting deptlist: " . implode(', ', array_keys($depts)));
+    return cache_set('ctsi_ldap_deptlist', $depts);
+  }
+  else {
+    user_error("Invalid deptlist set value " . var_export($depts, true));
+    return false;
+  }
+}
+
+/**
+ * Return and optionally write a list of LDAP departments.
+ */
+function ctsi_ldap_deptlist($value = null) {
+  static $depts = null;
+  if ($depts === null) {
+    $depts = ctsi_ldap_get_deptlist();
+  }
+  if ($value !== null) {
+    if (is_array($value)) {
+      if ($value != $depts) {
+        $depts = $value;
+        ctsi_ldap_set_deptlist($depts);
+      }
+      else {
+        // dpm("new value of deptlist is same as existing value");
+      }
+    }
+    else {
+      user_error("Invalid new value for deptlist: " . var_export($value, true));
+    }
+  }
+  return $depts;
+}
+
+/**
+ * Get the LDAP department corresponding to an ID number, if it exists.
+ */
+function ctsi_ldap_get_dept($dno) {
+  if (is_array($dno)) {
+    return ctsi_ldap_get_depts($dno);
+  }
+
+  $depts = ctsi_ldap_deptlist();
+  if (!isset($depts[$dno])) {
+    ctsi_ldap_query_depts($dno);
+    $depts = ctsi_ldap_deptlist();
+  }
+  return isset($depts[$dno]) ? $depts[$dno] : false;
+}
+
+/**
+ * Get information about a set of UCSF LDAP department numbers.
+ *
+ * @param array $dnos
+ *  An array of department numbers
+ * @return
+ *  An array of department info keyed by department number
+ */
+function ctsi_ldap_get_depts(array $dnos) {
+  $depts = ctsi_ldap_deptlist();
+  $unfound = array();
+  foreach ($dnos as $dno) {
+    if (!isset($depts[$dno])) {
+      $unfound[$dno] = $dno;
+    }
+  }
+  if ($unfound) {
+    ctsi_ldap_query_depts($unfound);
+    $depts = ctsi_ldap_deptlist();
+  }
+  $results = array();
+  foreach ($dnos as $dno) {
+    $results[$dno] = isset($depts[$dno]) ? $depts[$dno] : false;
+  }
+  return $results;
+}
+
+/**
+ * Run a query against the UCSF LDAP server for departments.
+ *  Updates the static list of department info with results.
+ *
+ * @param mixed $query
+ *  Optional query value(s):
+ *  - if empty, returns Campus and Control Point departments
+ *  - if numeric, query for a specific department number
+ *  - if an array, query for a set of department numbers or other specified parameters
+ *
+ * @return
+ *  An array of department info, keyed by department number
+ *
+ * @see ctsi_ldap_deptlist()
+ */
+function ctsi_ldap_query_depts($query = null) {
+  static $searchbase = 'ou=departments,dc=ucsf,dc=edu';
+
+  if (empty($query)) {
+    // get the top layer
+    $query = '(|(ucsfEduDepartmentType=Campus)(ucsfEduDepartmentType=Control Point))';
+  }
+  elseif (is_numeric($query)) {
+    $query = "(departmentNumber={$query})";
+  }
+  elseif (is_array($query)) {
+    $qs = $query;
+    $query = '(|';
+    foreach ($qs as $q) {
+      if (is_numeric($q)) {
+        $query .= "(departmentNumber={$q})";
+      }
+      else {
+        $query .= $q;
+      }
+    }
+    $query .= ')';
+  }
+
+  $output = array();
+  $depts = ctsi_ldap_deptlist();
+  $new = $unfound = array();
+  if ($results = ctsi_ldap_lookup($searchbase, $query)) {
+    foreach ($results as $dn => &$record) {
+      $dno = $record['departmentnumber'];
+      if (!empty($depts[$dno]['complete'])) {
+        // dpm("already know about {$dno}");
+        $output[$dno] = $depts[$dno];
+        continue;
+      }
+
+      $dname = empty($record['english']) ? $record['ucsfedudepartmentname'] : $record['english'];
+      $record['school_dno'] = $record['department_dno'] = null;
+
+      switch ($record['ucsfedudepartmenttype']) {
+        case 'Campus':
+          // ??
+          $record['ctsi_school'] = 'UCSF';
+          // for lack of anything better
+          $record['ctsi_department'] = $dname;
+          break;
+        case 'Control Point':
+          $record['ctsi_school'] = $dname;
+          $record['school_dno'] = $dno;
+          // ??? Control Points are above Departments
+//  reuse the Control Point name? seems dumb.
+//  $record['ctsi_department'] = $dname;
+          break;
+        case 'Department':
+          $record['ctsi_department'] = $dname;
+          $record['department_dno'] = $dno;
+          break;
+        case 'External Affiliate':
+          // do this later now
+          // if (empty($record['ctsi_department'])) {
+          // $record['ctsi_department'] = $dname;
+          // $record['department_dno'] = $dno;
+          // }
+      }
+
+      // dpm("Getting parents of {$dn}");
+      $record['parents'] = array();
+      foreach (explode(',', $dn) as $dnbit) {
+        // dpm("Looking up dnbit {$dnbit}");
+        if (strlen($dnbit) == 9 and $pdno = substr($dnbit, 3, 6) and $pdno != $record['departmentnumber']) {
+          $record['parents'][] = $pdno;
+          if (!isset($depts[$pdno])) {
+            $unfound[$pdno] = $pdno;
+          }
+        }
+      }
+      $new[$dno] = $output[$dno] = $record;
+    }
+    if ($new) {
+      foreach ($new as $dno => $record) {
+        $depts[$dno] = $record;
+      }
+      ctsi_ldap_deptlist($depts);
+    }
+    foreach (array_keys($unfound) as $pdno) {
+      if (isset($depts[$pdno])) {
+        unset($unfound[$pdno]);
+      }
+    }
+    if ($unfound) {
+      ctsi_ldap_query_depts($unfound);
+      $depts = ctsi_ldap_deptlist();
+    }
+    foreach ($results as $dn => &$record) {
+      $dno = $record['departmentnumber'];
+      if (empty($new[$dno])) {
+        continue;
+      }
+      $dname = empty($record['english']) ? $record['ucsfedudepartmentname'] : $record['english'];
+
+      if (empty($record['ctsi_school']) or empty($record['ctsi_department'])) {
+        // dpm("Processing {$dn} {$record['ucsfedudepartmenttype']} {$dname} {$dno}");
+        foreach ($record['parents'] as $pdno) {
+          if (isset($depts[$pdno])) {
+            $pdept = $depts[$pdno];
+            $pname = empty($pdept['english']) ? $pdept['ucsfedudepartmentname'] : $pdept['english'];
+            switch ($pdept['ucsfedudepartmenttype']) {
+              case 'Control Point':
+                $record['ctsi_school'] = $pname;
+                $record['school_dno'] = $pdno;
+                break;
+              case 'Department':
+                $record['ctsi_department'] = $pname;
+                $record['department_dno'] = $pdno;
+                break;
+              case 'External Affiliate':
+                // if (empty($record['ctsi_department'])) {
+                // $record['ctsi_department'] = $pname;
+                // $record['department_dno'] = $pdno;
+                // }
+            }
+            if (!empty($record['school_dno'])
+               and empty($record['department_dno'])
+               and isset($pdept['ucsfedudepartmentimmediateparent'])
+               and strpos($pdept['ucsfedudepartmentimmediateparent'], 'ou=' . $record['school_dno']) === 0
+            ) {
+              // if nobody else has been a Department and you're the child of a Control Point,
+//  you get the job
+              $record['ctsi_department'] = $pname;
+              $record['department_dno'] = $pdno;
+            }
+          }
+          else {
+            user_error("{$dn} parent dno {$pdno} is not in deptlist?");
+          }
+        }
+        if (!empty($record['school_dno']) and empty($record['department_dno'])) {
+          // if we have a Control Point for a parent but no Department, be one our own selves i guess
+          $record['ctsi_department'] = $dname;
+          $record['department_dno'] = $dno;
+        }
+      }
+      else {
+        // dpm("ctsi stuff for {$dno} {$dname} is complete");
+      }
+
+      $record['complete'] = true;
+      $new[$dno] = $output[$dno] = $record;
+      $depts[$dno] = $record;
+    }
+  }
+  if ($new) {
+    ctsi_ldap_deptlist($depts);
+  }
+
+  return $output;
+}
+
+/**
+ * Build the UCSF LDAP service URI and confirm that it's reachable.
+ *  ie we're in the network etc
+ */
+function ctsi_ldap_server() {
+  static $host = 'eds.ucsf.edu';
+  static $port = '636';
+  static $server = null;
+
+  if ($server === null) {
+    $server = 'ldaps://' . $host . ':' . $port;
+    $en = $es = null;
+    // TODO: one second may not be long enough, we'll see.
+    $timeout = 3;
+    if ($fh = @fsockopen($host, $port, $en, $es, $timeout)) {
+      // we can see the LDAP host
+      fclose($fh);
+    }
+    else {
+      // user_error("Error testing LDAP server : {$en} '{$es}'");
+      $server = false;
+    }
+  }
+
+  return $server;
+}
+
+/**
+ * Run a query against the UCSF LDAP service
+ */
+function ctsi_ldap_lookup($searchbase, $query, $force=FALSE) {
+  static $binddn = 'uid=Accelerate Website Request Form,ou=applications,dc=ucsf,dc=edu';
+  static $bindpw = 'Thu^h0oj97a$1';
+  static $nobind = FALSE;
+
+  $results = FALSE;
+
+  if (!($server = ctsi_ldap_server())) {
+    // the PHP error in the function already logs itself
+    return $results;
+  }
+  if ($nobind and !$force) {
+    // previous failure is logged already
+    return $results;
+  }
+
+  if ($ds = ldap_connect($server)) {
+    if (PHP_MINOR_VERSION > 2) {
+      ldap_set_option($ds, LDAP_OPT_NETWORK_TIMEOUT, 1);
+    }
+    if ($r = ldap_bind($ds, $binddn, $bindpw)) {
+      // dpm("Searching for {$query}");
+      $results = array();
+      if ($sr = ldap_search($ds, $searchbase, $query)) {
+        // dpm("Search result is {$sr}");
+        $entrycount = ldap_count_entries($ds, $sr);
+        // dpm('Number of entries returned is ' . $entrycount);
+
+        if ($entrycount) {
+          if (strpos($searchbase, 'people')) {
+            // we only care about sorting people for now
+            ldap_sort($ds, $sr, 'sn');
+          }
+
+          // dpm('Getting entries ...');
+          if ($info = ldap_get_entries($ds, $sr)) {
+            $results = ctsi_ldap_process_info($info);
+          }
+          else {
+            user_error("No entries for ds={$ds} sr={$sr} searchbase={$searchbase} query={$query}");
+          }
+        }
+        else {
+          // dpm('no errors just no entries found');
+        }
+      }
+      else {
+        user_error("No search result for {$ds} {$searchbase} {$query}");
+      }
+      ldap_close($ds);
+    }
+    else {
+      user_error("Unable to bind to {$ds} {$binddn} {$bindpw}");
+      $nobind = TRUE;
+    }
+  }
+  else {
+    user_error('Could not connect to server : ' . var_export($server, true));
+  }
+
+  return $results;
+}
+
+/**
+ * Convert UCSF LDAP server query results into useful form.
+ */
+function ctsi_ldap_process_info($info) {
+  $output = array();
+  $count = empty($info['count']) ? 0 : $info['count'];
+  // dpm("Data for {$count} items returned:");
+  // dpm(print_r($info, true));
+  // exit;
+
+  for ($i = 0; $i < $count; $i++) {
+    $dn = isset($info[$i]['dn']) ? $info[$i]['dn'] : 'FAILFAILNODNFAIL' . $i;
+    // dpm('info[' . $i . '] dn is: ' . $dn);
+    $rc = isset($info[$i]['count']) ? $info[$i]['count'] : 0;
+    $record = array();
+    $record['dn'] = $info[$i]['dn'];
+    for ($ri = 0; $ri < $rc; ++$ri) {
+      $k = $info[$i][$ri];
+      $v = $info[$i][$k];
+      $rv = null;
+      if (is_array($v)) {
+        $vc = isset($v['count']) ? $v['count'] : 0;
+        if ($vc == 1) {
+          $rv = $v[0];
+        }
+        else {
+          $rv = array();
+          for ($vi = 0; $vi < $vc; ++$vi) {
+            $rv[] = $v[$vi];
+          }
+        }
+      }
+      else {
+        user_error("hey {$k} value is not an array " . var_export($v, true));
+        $rv = $v;
+      }
+      $record[$k] = $rv;
+    }
+    $output[$dn] = $record;
+  }
+  return $output;
+}
+

@@ -1,0 +1,39 @@
+diff --git a/emaillog/emaillog.admin.inc b/emaillog/emaillog.admin.inc
+index 27fc8fc..6e161d5 100644
+--- a/emaillog/emaillog.admin.inc
++++ b/emaillog/emaillog.admin.inc
+@@ -37,7 +37,7 @@ function emaillog_admin_settings() {
+       '#type'           => 'textfield',
+       '#title'          => t('Types for severity %description', array('%description' => drupal_ucfirst($description))),
+       '#default_value'  => variable_get($key),
+-      '#description'    => t('Comma separated list of specific types to send log entries of severity %description for.', array('%description' => drupal_ucfirst($description))),
++      '#description'    => t('Comma separated list of specific types to send log entries of severity %description for. Preface list with "!" to indicate that these types are to be excluded instead.', array('%description' => drupal_ucfirst($description))),
+     );
+   }
+ 
+diff --git a/emaillog/emaillog.module b/emaillog/emaillog.module
+index 8ca1819..9231cb5 100644
+--- a/emaillog/emaillog.module
++++ b/emaillog/emaillog.module
+@@ -71,9 +71,18 @@ function emaillog_watchdog($log) {
+   // otherwise the message is ignored by this module.
+   $types = variable_get('emaillog_' . $log['severity'] . '_types');
+   if (!empty($types)) {
+-    $types = explode(',', $types);
+-    if (!in_array($log['type'], $types)) {
+-      return;
++    if (strpos($types, '!') === 0) {
++      // send for anything BUT these types
++      $types = substr($types, 1);
++      if (in_array($log['type'], array_filter(explode(',', $types), 'trim'))) {
++        return;
++      }
++    }
++    else {
++      // send ONLY for these types
++      if (!in_array($log['type'], array_filter(explode(',', $types), 'trim'))) {
++        return;
++      }
+     }
+   }
+ 

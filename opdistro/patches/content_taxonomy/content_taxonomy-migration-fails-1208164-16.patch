@@ -1,0 +1,18 @@
+diff --git a/content_taxonomy_migrate.module b/content_taxonomy_migrate.module
+index ee59187..198afa5 100644
+--- a/content_taxonomy_migrate.module
++++ b/content_taxonomy_migrate.module
+@@ -44,8 +44,12 @@ function content_taxonomy_migrate_content_migrate_instance_alter(&$instance_valu
+ }
+ 
+ function content_taxonomy_migrate_content_migrate_data_record_alter(&$record, $field) {
+-  // fill the taxonomy_index
+   if ($field['type'] == 'taxonomy_term_reference') {
++    // Copy field_FIELD_NAME_value (D6) to field_FIELD_NAME_tid (D7)
++    if(isset($record[$field['field_name'] . "_value"]) && !isset($record[$field['field_name'] . "_tid"])) {
++      $record[$field['field_name'] . "_tid"] = $record[$field['field_name'] . "_value"];
++    }
++    // fill the taxonomy_index
+     if (variable_get('taxonomy_maintain_index_table', TRUE) && $field['storage']['type'] == 'field_sql_storage' && $record['entity_type'] == 'node') {
+       if (isset($record[$field['field_name'] . "_tid"]) && $record[$field['field_name'] . "_tid"]) {
+         $entity = node_load($record['entity_id']);

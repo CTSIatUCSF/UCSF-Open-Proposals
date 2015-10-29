@@ -1,0 +1,2188 @@
+<?php
+
+/**
+ * @file
+ * Helper functions for OP forum Features modules
+ */
+
+if (!function_exists('ctsi_ldap_server')) {
+  function ctsi_ldap_server() { return false; }
+}
+
+/**
+ * Custom action definitions
+ */
+include_once 'op_common.action.inc';
+
+/**
+ * Implements hook_init().
+ */
+function op_common_init() {
+  if ($plugin = context_get_plugin('reaction', 'iptest')) {
+    $plugin->execute();
+  }
+}
+
+/**
+ * Implements hook_context_plugins().
+ */
+function op_common_context_plugins() {
+  $plugins = array();
+
+  $plugins['op_common_context_reaction_iptest'] = array(
+    'handler' => array(
+      'path' => drupal_get_path('module', 'op_common') . '/plugins',
+      'file' => 'op_common_context_reaction_iptest.inc',
+      'class' => 'op_common_context_reaction_iptest',
+      'parent' => 'context_reaction',
+    ),
+  );
+
+  return $plugins;
+}
+
+
+/**
+ * Implements hook_context_registry().
+ */
+function op_common_context_registry() {
+  $registry = array();
+
+  $registry['reactions']['iptest'] = array(
+    'title' => t('OP - IP Subnets'),
+    'plugin' => 'op_common_context_reaction_iptest',
+    'description' => t('Check user IP address against defined allowed list'),
+  );
+
+  return $registry;
+}
+
+/**
+ * Implements hook_ctools_plugin_api().
+ */
+function op_common_ctools_plugin_api($module, $api) {
+  if ($module == 'context' && $api == 'plugins') {
+    return array('version' => 3);
+  }
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function op_common_menu() {
+
+  $items = array();
+
+  $items['op/ajax/autocomplete_user'] = array(
+    'title' => 'autocomplete user',
+    'description' => 'Autocomplete callback for contact fields',
+    'page callback' => 'op_common_autocomplete_user',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['op/ajax/get_ucsfprofile'] = array(
+    'title' => 'get ucsfprofile',
+    'description' => 'AJAX callback for UCSF Profiles info',
+    'page callback' => 'op_common_get_ucsfprofile',
+    'access callback' => 'user_access',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Set user edit values from UCSF LDAP query results.
+ *
+ * @param array $edit
+ *  Reference to array of pending changes to user account values.
+ * @param object $account
+ *  The user account being changed.
+ * @param string $match
+ *  The value to be used in the LDAP query.
+ */
+function op_common_user_edit_ldap(&$edit, $account, $match) {
+  if (!ctsi_ldap_server()) {
+    return;
+  }
+  $person = array();
+  if ($results = ctsi_ldap_query_people($match)) {
+    if ($person = array_shift($results)) {
+      // don't bother looking up depts for any other, ignored results
+      $people = array($person['dn'] => &$person);
+      ctsi_ldap_people_depts($people);
+    }
+    else {
+      // dpm($person, 'did not shift an ldap record from results for ' . $match);
+    }
+  }
+  else {
+    // dpm($person, 'did not get ldap results for ' . $match);
+  }
+  if ($person) {
+    // dpm($person, 'found an ldap record for ' . $match);
+
+    // don't replace existing values or already-set incoming values
+
+    $langcode = field_language('user', $account, 'field_first_name');
+    if (isset($person['ctsi_register_as'])
+      and empty($edit['field_register_as'][$langcode][0]['value'])
+      and empty($account->field_register_as[$langcode][0]['value'])
+    ) {
+      if (($edit['field_register_as'][$langcode][0]['value'] = $person['ctsi_register_as']) == 'Other') {
+        if (isset($person['ctsi_register_as_other'])) {
+          $edit['field_register_as_other'][$langcode][0]['value'] = $person['ctsi_register_as_other'];
+        }
+      }
+    }
+    if (isset($person['ctsi_first'])
+      and empty($edit['field_first_name'][$langcode][0]['value'])
+      and empty($account->field_first_name[$langcode][0]['value'])
+    ) {
+      $edit['field_first_name'][$langcode][0]['value'] = $person['ctsi_first'];
+    }
+    if (isset($person['ctsi_last'])
+      and empty($edit['field_last_name'][$langcode][0]['value'])
+      and empty($account->field_last_name[$langcode][0]['value'])
+    ) {
+      $edit['field_last_name'][$langcode][0]['value'] = $person['ctsi_last'];
+    }
+    if (isset($person['ctsi_org'])
+      and empty($edit['field_org'][$langcode][0]['value'])
+      and empty($account->field_org[$langcode][0]['value'])
+    ) {
+      $edit['field_org'][$langcode][0]['value'] = $person['ctsi_org'];
+    }
+    if (isset($person['ctsi_title'])
+      and empty($edit['field_title'][$langcode][0]['value'])
+      and empty($account->field_title[$langcode][0]['value'])
+    ) {
+      $edit['field_title'][$langcode][0]['value'] = $person['ctsi_title'];
+    }
+    if (isset($person['ctsi_school'])
+      and empty($edit['field_ct_school'][$langcode][0]['tid'])
+      and empty($account->field_ct_school[$langcode][0]['tid'])
+      and $school = op_common_profile_term($person['ctsi_school'], 'schools')
+    ) {
+      $edit['field_ct_school'][$langcode][0]['tid'] = $school->tid;
+    }
+    if (isset($person['ctsi_department'])
+      and empty($edit['field_ct_dept'][$langcode][0]['tid'])
+      and empty($account->field_ct_dept[$langcode][0]['tid'])
+      and $department = op_common_profile_term($person['ctsi_department'], 'departments')
+    ) {
+      $edit['field_ct_dept'][$langcode][0]['tid'] = $department->tid;
+    }
+    if (empty($edit['field_phone'][$langcode][0]['value'])
+      and empty($account->field_phone[$langcode][0]['value'])
+      and !empty($person['telephonenumber'])
+      and !empty($person['ucsfedutelephonenumberreleasecode'])
+    ) {
+      $edit['field_phone'][$langcode][0]['value'] = $person['telephonenumber'];
+    }
+  }
+  else {
+    // dpm($person, 'did not found an ldap record for ' . $match);
+  }
+}
+
+/**
+ * Set user edit values from UCSF Profiles query results.
+ *
+ * @param array $edit
+ *  Reference to array of pending changes to user account values.
+ * @param object $account
+ *  The user account being changed.
+ * @param string $match
+ *  The value to be used in the UCSF Profiles query.
+ * @param string $key
+ *  The UCSF Profiles key being searched. Default is "Person" (PersonID).
+ */
+function op_common_user_edit_profiles(&$edit, $account, $match, $key='Person') {
+  if (function_exists('ctsi_profiles_get_ucsfprofile_json')) {
+    if ($pdata = ctsi_profiles_get_ucsfprofile_json($match, $key)) {
+      // dpm($pdata, 'found ucsf profiles data for ' . $match);
+      if (empty($pdata->Profiles[0])) {
+        // dpm($pdata, 'no actual data found in supposed ucsf profiles record for ' . $match);
+        return;
+      }
+
+      $profile = $pdata->Profiles[0];
+
+      // don't replace existing values or already-set incoming values
+
+      // just use whatever the first name field uses
+      $langcode = field_language('user', $account, 'field_first_name');
+
+      if (!empty($profile->ProfilesURL)
+        and empty($edit['field_ucsf_profiles_url'][$langcode][0]['value'])
+        and empty($account->field_ucsf_profiles_url[$langcode][0]['value'])
+      ) {
+        $edit['field_ucsf_profiles_url'][$langcode][0]['value'] = $profile->ProfilesURL;
+      }
+
+      if (!empty($profile->FirstName)
+        and empty($edit['field_first_name'][$langcode][0]['value'])
+        and empty($account->field_first_name[$langcode][0]['value'])
+      ) {
+        $edit['field_first_name'][$langcode][0]['value'] = $profile->FirstName;
+      }
+      if (!empty($profile->LastName)
+        and empty($edit['field_last_name'][$langcode][0]['value'])
+        and empty($account->field_last_name[$langcode][0]['value'])
+      ) {
+        $edit['field_last_name'][$langcode][0]['value'] = $profile->LastName;
+      }
+      if (!empty($profile->Titles[0])
+        and empty($edit['field_title'][$langcode][0]['value'])
+        and empty($account->field_title[$langcode][0]['value'])
+      ) {
+        $edit['field_title'][$langcode][0]['value'] = $profile->Titles[0];
+      }
+      if (!empty($profile->School)
+        and empty($edit['field_ct_school'][$langcode][0]['tid'])
+        and empty($account->field_ct_school[$langcode][0]['tid'])
+        and $school = op_common_profile_term($profile->School, 'schools')
+      ) {
+        $edit['field_ct_school'][$langcode][0]['tid'] = $school->tid;
+      }
+      if (!empty($profile->Department)
+        and empty($edit['field_ct_dept'][$langcode][0]['tid'])
+        and empty($account->field_ct_dept[$langcode][0]['tid'])
+        and $department = op_common_profile_term($profile->Department, 'departments')
+      ) {
+        $edit['field_ct_dept'][$langcode][0]['tid'] = $department->tid;
+      }
+      if (empty($edit['field_phone'][$langcode][0]['value'])
+        and empty($account->field_phone[$langcode][0]['value'])
+        and !empty($profile->Address->Telephone)
+      ) {
+        $edit['field_phone'][$langcode][0]['value'] = $profile->Address->Telephone;
+      }
+    }
+    else {
+      // dpm($pdata, 'did not found ucsf profiles data for ' . $match);
+    }
+  }
+}
+
+/**
+ * Implements hook_user_presave().
+ */
+function op_common_user_presave(&$edit, $account, $category) {
+  global $user;
+  global $_simplesamlphp_auth_as;
+  global $_simplesamlphp_auth_saml_attributes;
+
+  // just use whatever the first name field uses
+  $langcode = field_language('user', $account, 'field_first_name');
+  // dpm(compact('edit', 'account', 'category', 'langcode'), __FUNCTION__);
+
+  $init = empty($edit['init']) ? (empty($account->init) ? '' : $account->init) : $edit['init'];
+
+  if ($eppn = ctsi_make_eppn($init)) {
+    // dpm("made an eppn out of {$init} ; {$eppn}");
+    // if this is me and i am logged via SAML fill in my first & last name if it's missing
+    if (
+      (empty($account->field_first_name[$langcode][0]['value']) and empty($account->field_last_name[$langcode][0]['value']))
+      and
+      (empty($edit['field_first_name'][$langcode][0]['value']) and empty($edit['field_last_name'][$langcode][0]['value']))
+    ) {
+      if (is_object($_simplesamlphp_auth_as) and $_simplesamlphp_auth_as->isAuthenticated()) {
+        if (!empty($_simplesamlphp_auth_saml_attributes['eduPersonPrincipalName'][0])
+          and $_simplesamlphp_auth_saml_attributes['eduPersonPrincipalName'][0] == $eppn
+        ) {
+          // dpm($_simplesamlphp_auth_saml_attributes, 'my saml account info');
+          if (!empty($_simplesamlphp_auth_saml_attributes['givenName'][0])) {
+            $edit['field_first_name'][$langcode][0]['value'] = $_simplesamlphp_auth_saml_attributes['givenName'][0];
+          }
+          if (!empty($_simplesamlphp_auth_saml_attributes['sn'][0])) {
+            $edit['field_last_name'][$langcode][0]['value'] = $_simplesamlphp_auth_saml_attributes['sn'][0];
+          }
+        }
+        else {
+          // dpm('this is not the current saml-based account (ie mine) (probably)');
+        }
+      }
+      else {
+        // dpm('simplesaml stuff is not available');
+      }
+    }
+    else {
+      // dpm('first and last not totally empty');
+    }
+
+    if (ctsi_ldap_server()) {
+      if (
+        (empty($account->data['op_checked_ldap']) or $account->data['op_checked_ldap'] != $eppn)
+        and
+        (empty($edit['data']['op_checked_ldap']) or $edit['data']['op_checked_ldap'] != $eppn)
+      ) {
+        op_common_user_edit_ldap($edit, $account, $eppn);
+        $edit['data']['op_checked_ldap'] = $eppn;
+      }
+      else {
+        // dpm('already checked ldap with eppn ' . $eppn);
+      }
+    }
+    else {
+      // dpm('ldap server is not available');
+    }
+
+    // get ucsf profiles url using eppn
+    if (
+      (empty($account->data['op_checked_profiles']) or $account->data['op_checked_profiles'] != $eppn)
+      and
+      (empty($edit['data']['op_checked_profiles']) or $edit['data']['op_checked_profiles'] != $eppn)
+    ) {
+      op_common_user_edit_profiles($edit, $account, $eppn);
+      $edit['data']['op_checked_profiles'] = $eppn;
+    }
+
+  }
+  else {
+    // dpm("could not make an eppn out of {$init}");
+
+    if (ctsi_ldap_server()) {
+      $mail = null;
+      if (!empty($edit['mail'])) {
+        $mail = $edit['mail'];
+      }
+      elseif (!empty($account->mail)) {
+        $mail = $account->mail;
+      }
+      if ($mail and empty($account->data['op_checked_ldap']) and empty($edit['data']['op_checked_ldap'])) {
+        op_common_user_edit_ldap($edit, $account, $mail);
+        $edit['data']['op_checked_ldap'] = $mail;
+      }
+      else {
+        // dpm($mail, 'either mail is empty or already checked ldap');
+      }
+    }
+    else {
+      // dpm('ldap server is not available');
+    }
+
+    // get ucsf profiles url using name
+    $qname = null;
+    if (!empty($edit['field_first_name'][$langcode][0]['value']) and !empty($edit['field_last_name'][$langcode][0]['value'])) {
+      $qname = $edit['field_first_name'][$langcode][0]['value'] . '.' . $edit['field_last_name'][$langcode][0]['value'];
+    }
+    elseif (!empty($account->field_first_name[$langcode][0]['value']) and !empty($account->field_last_name[$langcode][0]['value'])) {
+      $qname = $account->field_first_name[$langcode][0]['value'] . '.' . $account->field_last_name[$langcode][0]['value'];
+    }
+    if ($qname and $qname = trim(strtolower($qname))
+      and empty($account->data['op_checked_profiles'])
+      and empty($edit['data']['op_checked_profiles'])
+    ) {
+      op_common_user_edit_profiles($edit, $account, $qname);
+      $edit['data']['op_checked_profiles'] = $qname;
+    }
+  }
+}
+
+/**
+ * Find or create a term of the given vocabulary
+ *  matches on term name or synonym
+ */
+function op_common_profile_term($name, $machine_name) {
+  if ($terms = taxonomy_get_term_by_name($name, $machine_name)) {
+    $term = array_shift($terms);
+    return $term;
+  }
+  if ($voc = taxonomy_vocabulary_machine_name_load($machine_name)) {
+    $term = (object) array(
+      'vid' => $voc->vid,
+      'name' => $name,
+    );
+    taxonomy_term_save($term);
+    return $term;
+  }
+  return false;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function op_common_theme() {
+  return array(
+    'op_common_participants' => array(
+      'template' => 'op-common-participants',
+      'variables' => array('type' => null, 'participants' => null),
+    ),
+    'op_login_text' => array(
+      'variables' => array(
+        'content_type' => null,
+        'login_type' => null,
+        'op_login' => null,
+        'op_forum' => null
+      ),
+    ),
+    'op_create_text' => array(
+      'variables' => array(
+        'content_type' => null,
+        'login_type' => null,
+        'op_login' => null,
+        'op_forum' => null,
+        'nouns' => null,
+      ),
+    ),
+  );
+}
+
+/**
+ * Load the current Open Proposal forum, if any,
+ *  by looking at currently active contexts.
+ *
+ * @todo Add a context reaction plugin to set this explicitly.
+ */
+function op_common_current_forum($data=NULL) {
+  $op_forum = NULL;
+  $contexts = array_filter(context_active_contexts());
+  foreach ($contexts as $name => $context) {
+    if (!empty($context->export_module) and $name == $context->export_module
+      and !empty($context->conditions['node']['values']) and count($context->conditions['node']['values']) == 1
+    ) {
+      $content_type = current($context->conditions['node']['values']);
+      if ($name == $content_type) {
+        // if the name is the module is the only content type, safe bet this is a forum
+        $op_forum = op_common_op_forum_load($name, $context);
+        break;
+      }
+    }
+  }
+  if (empty($op_forum) and is_array($data)) {
+    if (!empty($data['node']) and $forum = op_common_op_forum_load($data['node']->type)) {
+      $op_forum = $forum;
+    }
+    elseif (!empty($data['node_type']) and $forum = op_common_op_forum_load($data['node_type']->type)) {
+      $op_forum = $forum;
+    }
+    elseif (arg(0) == 'node' and $node = node_load(arg(1)) and $forum = op_common_op_forum_load($node->type)) {
+      $op_forum = $forum;
+    }
+    elseif (arg(0) == 'comment' and $node = node_load(arg(2)) and $forum = op_common_op_forum_load($node->type)) {
+      $op_forum = $forum;
+    }
+  }
+  return $op_forum;
+}
+
+function op_common_op_forum_load($name, $context = NULL) {
+  $op_forums = &drupal_static(__FUNCTION__, array());
+  if (empty($op_forums[$name])) {
+    $op_forum = new stdClass();
+    $op_forum->name = $name;
+    $op_forum->content_type = $name;
+    if ($context or $context = context_load($name)) {
+      $op_forum->context = $context;
+    }
+    else {
+      $op_forum->context = null;
+    }
+    $op_forum->login_type = op_common_get_login_type($op_forum->content_type);
+    $op_forum->login = op_common_op_login_load($op_forum->login_type);
+    // these will call the theme functions with relevant hooks
+    $vars = array('content_type' => $op_forum->content_type, 'login_type' => $op_forum->login_type, 'login' => $op_forum->login, 'forum' => $op_forum);
+    $op_forum->login->text = op_common_op_login_text($vars);
+    $op_forum->create_text = op_common_op_create_text($op_forum->content_type, $op_forum->login_type, $op_forum->login, $op_forum);
+    $op_forum->noun = 'proposal';
+    $op_forum->nouns = 'proposals';
+
+    drupal_alter(array('op_forum', 'op_forum_' . $name), $op_forum);
+
+    $op_forums[$name] = $op_forum;
+  }
+  return $op_forums[$name];
+}
+
+function op_common_op_login_text(array $vars = array()) {
+  $defaults = array('content_type' => NULL, 'login_type' => 'all', 'login' => NULL, 'forum' => NULL);
+  extract($vars, EXTR_SKIP);
+  extract($defaults, EXTR_SKIP);
+
+  if (empty($login_type)) {
+    $login_type = 'all';
+  }
+  if (empty($content_type) and !empty($node_type)) {
+    $content_type = $node_type;
+  }
+  if (empty($login)) {
+    if ($content_login_type = op_common_get_login_type($content_type)) {
+      $login_type = $content_login_type;
+      $login = op_common_op_login_load($login_type);
+    }
+  }
+  $variables = compact(array_keys($defaults)) + $vars;
+  if (isset($forum)) {
+    // historical
+    $variables['op_forum'] = $forum;
+  }
+  $hooks = array(
+    'op_login_text__' . $content_type . '__' . $login_type,
+    'op_login_text__' . $content_type,
+    'op_login_text__' . $login_type,
+    'op_login_text',
+  );
+  return theme($hooks, $variables);
+}
+
+function op_common_op_create_text($content_type, $login_type = 'all', $op_login = NULL, $op_forum = NULL, $nouns = NULL) {
+  // dpm(compact('content_type','login_type','op_login','op_forum','nouns'), __FUNCTION__);
+  if (empty($op_login)) {
+    if ($content_login_type = op_common_get_login_type($content_type)) {
+      $login_type = $content_login_type;
+      $op_login = op_common_op_login_load($login_type);
+    }
+  }
+  $variables = array('content_type' => $content_type, 'login_type' => $login_type);
+  if ($op_login) {
+    $variables['op_login'] = $op_login;
+  }
+  if ($op_forum) {
+    $variables['op_forum'] = $op_forum;
+  }
+  $variables['nouns'] = $nouns;
+  $hooks = array(
+    'op_create_text__' . $content_type . '__' . $login_type,
+    'op_create_text__' . $content_type,
+    'op_create_text__' . $login_type,
+    'op_create_text',
+  );
+  return theme($hooks, $variables);
+}
+
+/**
+ * Implements hook_preprocess_node()
+ */
+function op_common_preprocess_node(&$vars) {
+  global $user;
+
+  // Views preview is using module template files in the admin theme.
+  $regions = array(
+    'ucsf_links' => NULL,
+    'brand' => NULL,
+    'top_links' => NULL,
+    'main_menu' => NULL,
+    'content_top' => NULL,
+    'hero_first' => NULL,
+    'hero_second' => NULL,
+    'preface_first' => NULL,
+    'preface_second' => NULL,
+    'preface_third' => NULL,
+    'help' => NULL,
+    'sidebar_first' => NULL,
+    'content' => NULL,
+    'content_after_title' => NULL,
+    'node_block' => NULL,
+    'acknowledgement' => NULL,
+    'footer_first' => NULL,
+    'footer_second' => NULL,
+    'footer_third' => NULL,
+  );
+  $vars += $regions;
+}
+
+/**
+ * Do standard node preprocessing.
+ */
+function op_common_setup_node(&$vars) {
+  // get last revision info
+  $vars['revised'] = ctsi_revised($vars['node']);
+
+  // add Author Affiliation
+  $vars['author'] = user_load($vars['node']->uid);
+  $vars['author_org'] = ctsi_field_first_value('user', $vars['author'], 'field_org');
+}
+
+/**
+ * Add Primary Author fields in node preprocessing.
+ *  Assumes that node fields follow standard naming pattern.
+ */
+function op_common_setup_primary_author(&$vars) {
+  $node = $vars['node'];
+  $prefix = 'field_' . $node->type;
+  op_common_setup_entity_primary_author('node', $node, $prefix, $vars);
+}
+/**
+ * More generalized version to work with field_collections
+ */
+function op_common_setup_entity_primary_author($entity_type, $entity, $prefix, &$vars) {
+  $primary_author = $primary_url = $primary_email = '';
+  if ($entity) {
+    $primary_author = ctsi_field_first_value($entity_type, $entity, $prefix . '_pa_first');
+    $primary_author .= ' ' . ctsi_field_first_value($entity_type, $entity, $prefix . '_pa_last');
+    if ($primary_author = trim($primary_author)) {
+      if ($primary_url = ctsi_field_first_value($entity_type, $entity, $prefix . '_pa_url')) {
+        $primary_author = l($primary_author, $primary_url);
+      }
+    }
+    $primary_email = ctsi_field_first_value($entity_type, $entity, $prefix . '_pa_email');
+  }
+  // dpm(compact('entity_type','entity','prefix','vars','primary_author'), __FUNCTION__);
+  $vars['primary_author'] = $primary_author;
+  $vars['primary_url'] = $primary_url;
+  $vars['primary_email'] = $primary_email;
+}
+
+/**
+ * Process variables for op-common-participants.tpl.php
+ */
+function template_preprocess_op_common_participants(&$variables) {
+  $type = $variables['type'];
+  $variables['typename'] = node_type_get_name($type);
+  $variables['template_files'][] = str_replace('_', '-', $type) . '-participants';
+}
+
+/**
+ * Implements hook_theme_registry_alter().
+ */
+function op_common_theme_registry_alter(&$theme_registry) {
+  $theme_registry['status_messages']['function'] = 'op_common_status_messages';
+}
+
+/**
+ * Implementation of theme_status_messages()
+ *
+ * Customize Notifications text.
+ *  Allow active contexts to override these customizations.
+ *  Awkward "follow" constructions are default.
+ */
+function op_common_status_messages($variables) {
+  global $theme_key;
+
+  $display = null;
+  if (isset($variables['display'])) {
+    $display = $variables['display'];
+  }
+  if ($theme_key == 'opbamboo' and !empty($_SESSION['messages'])) {
+    $contexts = context_active_contexts();
+    $custom = false;
+    foreach ($contexts as $context) {
+      if ($context and !empty($context->name) and empty($context->disabled)) {
+        $hook = $context->name . '_ctsi_status_messages';
+        if (function_exists($hook)) {
+          $display = $hook($display);
+          $custom = true;
+        }
+      }
+    }
+    if (!$custom) {
+      // fix the Follow/Unfollow stuff by default
+      op_common_follow_messages($display);
+    }
+    $variables['display'] = $display;
+    return opbamboo_status_messages($variables);
+  }
+  $variables['display'] = $display;
+  return theme_status_messages($display);
+}
+
+/**
+ * Common "follow" status message hacking
+ *
+ * @todo This probably is moot, or at least different, with Subscriptions and 7.x.
+ */
+function op_common_follow_messages($display) {
+
+  foreach (array_keys($_SESSION['messages']) as $type) {
+    $messages = $_SESSION['messages'][$type];
+    $change = false;
+    foreach (array_keys($messages) as $key) {
+      $message = $messages[$key];
+      if ($message == 'Your subscription was activated.') {
+        $messages[$key] = 'You are now following updates on selected Open Proposals.';
+        $change = true;
+      }
+      elseif ($message == 'Your subscription has been removed.') {
+        $messages[$key] = 'You are no longer following updates on selected Open Proposals.';
+        $change = true;
+      }
+    }
+    if ($change) {
+      // renumber status items or it screws up
+      $_SESSION['messages'][$type] = array_values($messages);
+    }
+  }
+  return $display;
+}
+
+/**
+ * Alter CTSI node Subscriptions links to use custom language.
+ *
+ * @param array $link
+ *  link definition array by reference
+ * @param array $titles
+ *  map of Subscriptions operations and types to phrases
+ * @param array $subargs
+ *  Optional. deconstruction of link href value to subscription related parts.
+ *    will construct here if not supplied.
+ */
+function op_common_sublink_custom_title(&$link, $titles, $subargs = NULL) {
+  if (empty($subargs)) {
+    $subargs = ctsi_subs_args($link['href']);
+    if (empty($subargs)) {
+      dpm(compact('link','subargs'), __FUNCTION__ . ' sees an invalid sublink entry?');
+      continue;
+    }
+  }
+  if (
+    isset($subargs['subop'])
+    and isset($subargs['subtype'])
+    and isset($titles[$subargs['subop']][$subargs['subtype']])
+  ) {
+    $link['title'] = $titles[$subargs['subop']][$subargs['subtype']];
+  }
+}
+
+/**
+ * Callback for menu item - typically, forum 'participants' menu item.
+ *
+ * Run queries to get names and emails of various groups of users
+ *  and display them - for use of admins in sending out mail
+ *
+ * @param $type
+ *  content type name (eg 'page', 'op_generic')
+ *
+ * @todo Rewrite for use with Subscriptions.
+ */
+function op_common_participants($type) {
+
+  $participants = array(
+    'subscribers' => array(
+      'title' => 'Forum Subscribers',
+      'names' => array(),
+    ),
+    'authors' => array(
+      'title' => 'Proposal Authors',
+      'names' => array(),
+    ),
+    'commenters' => array(
+      'title' => 'Participants',
+      'names' => array(),
+    ),
+    'noncoms' => array(
+      'title' => 'Non-Commenting Authors',
+      'names' => array(),
+    ),
+  );
+
+  // subscribers
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {subscriptions} s
+  join {users} u on s.recipient_uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where s.module = 'node'
+and (
+  (s.field = 'type' and s.value = :type1)
+  or (s.field = 'nid' and s.value in (select nid from node where type = :type2))
+)
+and u.uid > 0
+order by realname
+EOQ;
+  $bind = array(':type1' => $type, ':type2' => $type);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['subscribers']['names'][$row->uid] = $row;
+    }
+  }
+
+  // authors
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {node} n
+  join {users} u on n.uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where n.type = :type
+and u.uid > 0
+order by realname
+EOQ;
+  $bind = array(':type' => $type);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['authors']['names'][$row->uid] = $row;
+    }
+  }
+
+  // commenters
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {comment} c
+  join {node} n on c.nid = n.nid
+  join {users} u on c.uid = u.uid
+  left join {realname} r on u.uid = r.uid
+where n.type = :type1
+and u.uid > 0
+union
+select distinct c.uid, c.name, c.mail, c.name as realname
+from {comment} c
+  join {node} n on c.nid = n.nid
+where n.type = :type2
+and c.uid = 0
+and c.mail > ''
+order by realname
+EOQ;
+  $bind = array(':type1' => $type, ':type2' => $type);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['commenters']['names'][$row->mail] = $row;
+    }
+  }
+
+  $sql = <<<EOQ
+select distinct p.uid, r.realname, a.name, a.mail
+from {node_type} t
+join {node} p on t.type = p.type
+join {realname} r on p.uid = r.uid
+join {users} a on p.uid = a.uid
+where p.uid not in (
+  select c.uid from {comment} c
+    join {node} n on c.nid = n.nid
+  where n.type = t.type
+    and n.uid != p.uid
+)
+and lower(trim(a.mail)) not in (
+  select lower(trim(c.mail)) from {comment} c
+    join {node} n on c.nid = n.nid
+  where n.type = t.type
+    and n.uid != p.uid
+)
+and lower(r.realname) not in (
+  select lower(trim(c.name)) from {comment} c
+    join {node} n on c.nid = n.nid
+  where n.type = t.type
+    and n.uid != p.uid
+)
+and t.type = :type
+EOQ;
+  $bind = array(':type' => $type);
+  if ($result = db_query($sql, $bind)) {
+    foreach ($result as $row) {
+      $participants['noncoms']['names'][$row->mail] = $row;
+    }
+  }
+
+  $not_pa_field = 'field_' . $type . '_not_pa';
+  if (field_info_instance('node', $not_pa_field, $type)) {
+    $participants['primaries'] = array(
+      'title' => 'Non-Editing Primary Authors',
+      'names' => array(),
+    );
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'node')
+      ->entityCondition('bundle', $type)
+      ->addTag('debug')
+      ->fieldCondition($not_pa_field, 'value', 1, '=')
+    ;
+    $result = $query->execute();
+    if (isset($result['node']) and is_array($result['node'])) {
+      if ($nodes = node_load_multiple(array_keys($result['node']))) {
+        foreach ($nodes as $node) {
+          $prefix = 'field_' . $node->type;
+          $name = trim(trim(ctsi_field_first_value('node', $node, $prefix . '_pa_first')) . ' ' . trim(ctsi_field_first_value('node', $node, $prefix . '_pa_last')));
+          $email = ctsi_field_first_value('node', $node, $prefix . '_pa_email');
+          $row = (object) array(
+            'uid' => 0,
+            'name' => $name,
+            'mail' => $email,
+            'realname' => $name,
+          );
+          $participants['primaries']['names'][$email] = $row;
+        }
+      }
+    }
+  }
+
+  // TODO - when we pick a module, figure out how to tell
+  //  if there ought to be votes so we can display an empty box
+  //  for now, just go look for voters
+
+  $voters = array();
+  $sql = <<<EOQ
+select distinct u.uid, u.name, u.mail, r.realname
+from {users} u
+  left join {realname} r on u.uid = r.uid
+where u.uid > 0
+and u.uid in (
+  select v.uid from {votingapi_vote} v
+  join {node} n
+    on v.entity_type = 'node'
+      and v.entity_id = n.nid
+  where n.type = :type
+)
+order by realname
+EOQ;
+  if ($result = db_query($sql, array(':type' => $type))) {
+    foreach ($result as $row) {
+      $voters[$row->mail] = $row;
+    }
+  }
+  if ($voters) {
+    $participants['voters'] = array(
+      'title' => 'Voters',
+      'names' => $voters,
+    );
+  }
+
+  $output = theme('op_common_participants', array('type' => $type, 'participants' => $participants));
+
+  return $output;
+}
+
+/**
+ * Fix ampersands in XSS filter output
+ *  for TITLE tag values and other places where '&amp;' is wrong
+ */
+function op_common_custom_xss_filter($str) {
+  return str_replace(' &amp; ', ' & ', filter_xss_admin($str));
+}
+
+/**
+ * Match a view argument against either a term ID or name
+ *  and return the relevant term (if any)
+ *  Optionally also return the vocabulary ID for a given machine_name
+ *
+ * @param $arg
+ *  The argument to match
+ * @param $prefix
+ *  Optional. A prefix of vocabulary machine names to use as a restriction when matching a name
+ * @param $machine_name
+ *  Optional. The machine_name for a particular vocabulary.
+ *
+ * @todo What is that machine name argument I don't even. Confirm we ever use it.
+ */
+function op_common_match_view_term_arg($arg, $prefix = null, $machine_name = null) {
+
+  $term = null;
+  $machine_name_vid = $machine_name ? false : null;
+
+  if (is_numeric($arg)) {
+    $term = taxonomy_term_load($arg);
+  }
+  else {
+    $match = str_replace('-', '_', $arg);
+    $terms = $vids = array();
+    if ($prefix) {
+      $query = new EntityFieldQuery();
+      $result = $query->entityCondition('entity_type', 'taxonomy_vocabulary')
+        ->propertyCondition('machine_name', $prefix . '%', 'like')
+        ->execute()
+      ;
+      if (isset($result['taxonomy_vocabulary']) and is_array($result['taxonomy_vocabulary'])) {
+        $vids = array_keys($result['taxonomy_vocabulary']);
+      }
+    }
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'taxonomy_term')
+      ->propertyCondition('name', $match, 'like')
+    ;
+    if ($vids) {
+      $query->propertyCondition('vid', $vids, 'IN');
+    }
+    $result = $query->execute();
+    if (isset($result['taxonomy_term']) and is_array($result['taxonomy_term'])) {
+      $tids = array_keys($result['taxonomy_term']);
+      $terms = taxonomy_term_load_multiple($tids);
+    }
+    $term = array_shift($terms);
+  }
+  if ($machine_name) {
+    if ($term and $term->vocabulary_machine_name == $machine_name) {
+      $machine_name_vid = $term->vid;
+    }
+    elseif ($voc = taxonomy_vocabulary_machine_name_load($machine_name)) {
+      $machine_name_vid = $voc->vid;
+    }
+    return array($term, $machine_name_vid);
+  }
+  return $term;
+}
+
+/**
+ * Count stuff for report headers / footers
+ *
+ * @param $counts
+ *    A reference to an array of types of counts to be done
+ * @param $type
+ *    A node type to be counted
+ * @param $status_name
+ *    An optional machine name for a vocabulary used by certain kinds of counts
+ * @param $excluded
+ *    An optional term or list of terms for the $status_name vocabulary
+ *    to use in excluding nodes from certain counts
+ */
+function op_common_report_counts(&$counts, $type, $status_name = null, $excluded = null) {
+
+  $excluded_nids = array();
+  $exclude_sql = null;
+  if ($status_name and $excluded) {
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'taxonomy_term')
+      ->entityCondition('bundle', $status_name)
+      ->propertyCondition('name', (array)$excluded, 'IN')
+    ;
+    $result = $query->execute();
+    if (isset($result['taxonomy_term']) and is_array($result['taxonomy_term'])) {
+      foreach ($result['taxonomy_term'] as $tid => $item) {
+        $excluded_nids += taxonomy_select_nodes($tid, false);
+      }
+    }
+  }
+  if ($excluded_nids) {
+    $exclude_sql = ' and n.nid not in (' . implode(', ', $excluded_nids) . ') ';
+  }
+
+  if (isset($counts['proposals']) or isset($counts['comments'])) {
+    $sql = <<<EOQ
+select count(distinct n.nid) as proposal_count, count(distinct c.cid) as comment_count
+from {node} n
+  left join {comment} c on n.nid = c.nid
+where n.type = :type
+and n.status = 1
+EOQ;
+    $bind = array(':type' => $type);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      if (isset($counts['proposals'])) {
+        $counts['proposals'] = $row->proposal_count;
+      }
+      if (isset($counts['comments'])) {
+        $counts['comments'] = $row->comment_count;
+      }
+    }
+  }
+
+  if (isset($counts['commenters'])) {
+    $sql = <<<EOQ
+select count(distinct if(u.mail > '', u.mail, c.mail)) as commenter_count
+from {comment} c
+  join {node} n on c.nid = n.nid
+  left join {users} u on c.uid = u.uid
+where n.type = :type
+and n.status = 1
+and (u.mail > '' or c.mail > '')
+EOQ;
+    $bind = array(':type' => $type);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['commenters'] = $row->commenter_count;
+    }
+  }
+
+  if (isset($counts['changed'])) {
+    $sql = <<<EOQ
+select count(distinct n.nid) as changed_count
+from {node} n
+  join {node_revision} r on n.nid = r.nid and n.vid != r.vid
+where n.type = :type
+and n.status = 1
+EOQ;
+    $bind = array(':type' => $type);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['changed'] = $row->changed_count;
+    }
+  }
+
+  if (isset($counts['max_node_comments'])) {
+    $sql = <<<EOQ
+select max(comment_count) as max_node_comment_count
+from (
+  select n.nid, count(distinct c.cid) as comment_count
+  from {node} n
+    left join {comment} c on n.nid = c.nid
+  where n.type = :type
+  and n.status = 1
+EOQ;
+    $bind = array(':type' => $type);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    $sql .= <<<EOQ
+  group by nid
+) x
+EOQ;
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['max_node_comments'] = $row->max_node_comment_count;
+    }
+  }
+
+  if (isset($counts['by_status']) and $status_name) {
+    $sql = <<<EOQ
+select d.name as term_name, count(distinct n.nid) as term_count
+from
+  {taxonomy_vocabulary} v
+  join {taxonomy_term_data} d on d.vid = v.vid
+  left join {taxonomy_index} t on t.tid = d.tid
+  left join {node} n on n.type = :type and n.nid = t.nid 
+    and n.status = 1
+where v.machine_name = :status_name
+group by d.name
+EOQ;
+    $bind = array(':type' => $type, ':status_name' => $status_name);
+    if ($result = db_query($sql, $bind)) {
+      foreach ($result as $row) {
+        $counts['by_status'][$row->term_name] = $row->term_count;
+      }
+    }
+  }
+
+  if (isset($counts['voters'])) {
+    $sql = <<<EOQ
+select count(distinct a.uid) as voter_count
+from {votingapi_vote} a
+  join {node} n
+    on a.entity_type = 'node'
+      and a.entity_id = n.nid
+where n.type = :type
+and n.status = 1
+
+EOQ;
+    $bind = array(':type' => $type);
+
+    if ($exclude_sql) {
+      $sql .= $exclude_sql;
+    }
+    if ($row = db_query($sql, $bind)->fetch()) {
+      $counts['voters'] = $row->voter_count;
+    }
+  }
+}
+
+/**
+ * Find people based on email or name.
+ * Horked from menu_editor.menu_editor_path_autocomplete
+ *
+ * @param $string
+ *   Title of element to find.
+ * @return
+ *   List of elements with path as key.
+ */
+function op_common_autocomplete_user($string = '') {
+  $string = strtolower($string);
+  $usermatch = filter_xss_admin($string);
+  $matches = array($string => $string);
+
+  // lookup against users table
+  op_common_lookup_users($matches, $usermatch);
+  if (strlen($usermatch) >= 3) {
+    // minimum search string size
+    op_common_lookup_ldap($matches, $usermatch);
+  }
+
+  $jmatches = array();
+  foreach ($matches as $email => $row) {
+    if (!empty($row['value']) and !empty($row['display'])) {
+      $jmatches[$row['value']] = $row['display'];
+    }
+  }
+
+  // drupal_json_output($jmatches);
+  // well, no, apparently that doesn't work - causes an HTTP 0 error
+  // https://drupal.org/node/399676#comment-1438662
+  print drupal_json_encode($jmatches);
+  exit;
+}
+
+/**
+ * Find UCSF Profiles data for an ID, if it exists
+ *
+ * @param $id
+ *   Title of element to find.
+ * @return
+ *   Array of Profiles field or NULL
+ */
+function op_common_get_ucsfprofile($string = '') {
+  if (function_exists('ctsi_profiles_get_user')) {
+    $lstring = strtolower(trim($string));
+    $personid = filter_xss_admin($lstring);
+    $profile = ctsi_profiles_get_user($personid);
+    drupal_json_output($profile);
+  }
+}
+
+/**
+ * Query Drupal users data for partial matches to given string on name or email.
+ *  Used by autocomplete functions primarily.
+ *
+ * @param array &$matches
+ *  Reference to array to be filled with results, keyed by email address.
+ * @param string $usermatch
+ *  String to be matched.
+ */
+function op_common_lookup_users(&$matches, $usermatch) {
+  // matching people with no profile_personal table, to get the email at least
+  $users = array();
+  $sql = <<<EOQ
+select u.uid, u.name, u.mail
+  , f.field_first_name_value as first_name
+  , l.field_last_name_value as last_name
+  , trim(concat(f.field_first_name_value, ' ', l.field_last_name_value)) as realname
+  , o.field_org_value as org
+  , (u.mail like x.test) + if(f.field_first_name_value like x.test or l.field_last_name_value like x.test,1,0) as score
+from (select :test as test) x
+  join users u
+  left join field_data_field_first_name f on f.entity_type = 'user' and f.entity_id = u.uid
+  left join field_data_field_last_name l on l.entity_type = 'user' and l.entity_id = u.uid
+  left join field_data_field_org o on o.entity_type = 'user' and o.entity_id = u.uid
+where (
+  u.mail like x.test
+  OR f.field_first_name_value like x.test
+  OR l.field_last_name_value like x.test
+  OR concat(f.field_first_name_value, ' ', l.field_last_name_value) like x.test
+)
+order by score desc, mail, last_name, first_name
+EOQ;
+  // Get a list of all users where the email or name matches the given string.
+  if ($result = db_query($sql, array(':test' => '%' . $usermatch . '%'))) {
+    foreach ($result as $row) {
+      $users[] = $row;
+    }
+  }
+  $getpersonid = function_exists('ctsi_profiles_get_personid');
+  foreach ($users as $row) {
+    $email = $row->mail = strtolower($row->mail);
+    if ($row->realname) {
+      $display = trim(check_plain($row->realname)) . ' (' . check_plain($row->mail) . ')';
+    }
+    else {
+      $display = check_plain($row->mail);
+    }
+
+    $personid = $getpersonid ? (string) ctsi_profiles_get_personid($row->name) : '';
+
+    $vfields = array(
+      $row->first_name,
+      $row->last_name,
+      $email,
+      $row->org,
+      $personid,
+    );
+    $value = implode('|', array_map('trim', $vfields));
+    // Add user to list
+    $matches[$email]['value'] = $value;
+    $matches[$email]['display'] = $display;
+  }
+}
+
+/**
+ * Query UCSF LDAP service for matches to given string on name or email.
+ *  Used by autocomplete functions primarily.
+ *
+ * @param array &$matches
+ *  Reference to array to be filled with results, keyed by email address.
+ * @param string $usermatch
+ *  String to be matched.
+ * @param string $searchkey
+ *  Optional LDAP record field name to be matched.
+ */
+function op_common_lookup_ldap(&$matches, $usermatch, $searchkey = null) {
+  if (!ctsi_ldap_server()) {
+    return;
+  }
+  $empty = array(
+    'first' => '',
+    'last' => '',
+    'mail' => '',
+    'org' => '',
+    'personid' => '',
+  );
+  if ($people = ctsi_ldap_query_people($usermatch, $searchkey)) {
+    $getpersonid = function_exists('ctsi_profiles_get_personid');
+    foreach ($people as $person) {
+      $email = isset($person['mail']) ? strtolower($person['mail']) : '';
+      // Add user to list if not already present
+      if (empty($matches[$email])) {
+        $data = $empty;
+        $data['first'] = $person['ctsi_first'];
+        $data['last'] = $person['ctsi_last'];
+        $data['mail'] = $email;
+        $data['org'] = $person['ctsi_org'];
+        $data['personid'] = $getpersonid ? (string) ctsi_profiles_get_personid($person['edupersonprincipalname']) : '';
+
+        $display = implode(' ', array_filter(array($data['first'], $data['last'])));
+        if ($data['mail']) {
+          $display .= " ({$data['mail']})";
+        }
+        $value = implode('|', array_map('trim', $data));
+
+        $matches[$email]['value'] = $value;
+        $matches[$email]['display'] = $display;
+      }
+    }
+  }
+}
+/**
+ * Set old variable value for allowing Drupal logins
+ *
+ * @see op_common_form_node_type_form_alter
+ * @todo Remove references to the old ctsi_allow_drupal_logins_NODETYPE variable.
+ */
+function op_common_legacy_drupal_logins_submit($form, &$form_state) {
+  $allow_drupal = 1;
+  if (isset($form_state['values']['ctsi_login_type'])) {
+    if ($form_state['values']['ctsi_login_type'] == 'saml') {
+      $allow_drupal = 0;
+    }
+  }
+  variable_set('ctsi_allow_drupal_logins_' . $form_state['values']['type'], $allow_drupal);
+}
+
+/**
+ * Implements hook_form_node_type_form_alter().
+ */
+function op_common_form_node_type_form_alter(&$form, $form_state) {
+  $form['ctsi'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('CTSI settings'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#group' => 'additional_settings',
+  );
+
+  // $form['ctsi']['ctsi_allow_drupal_logins'] = array(
+    // '#type' => 'checkbox',
+    // '#default_value' => variable_get('ctsi_allow_drupal_logins_' . $form['#node_type']->type, 1),
+    // '#title' => t('Display Drupal login links for this content type'),
+  // );
+  $logintypes = array('all' => t('All'), 'drupal' => t('Drupal only'), 'saml' => t('SAML only'));
+  $logintype = variable_get('ctsi_login_type_' . $form['#node_type']->type, 'all');
+  if (!variable_get('ctsi_allow_drupal_logins_' . $form['#node_type']->type, 1)) {
+    $logintype = 'saml';
+  }
+  $form['ctsi']['ctsi_login_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Login types allowed'),
+    '#default_value' => $logintype,
+    '#options' => $logintypes,
+    '#description' => t('Type(s) of login links to be displayed'),
+  );
+  $form['#submit'][] = 'op_common_legacy_drupal_logins_submit';
+
+  $anonycom = variable_get('ctsi_allow_anonymous_comments_' . $form['#node_type']->type, 1);
+
+  $form['ctsi']['ctsi_allow_anonymous_comments'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => $anonycom,
+    '#title' => t('Enable anonymous comments on this content type'),
+    '#description' => t('This option is enabled when anonymous users have <a href="@url">"Post comments" permission</a>.', array('@url' => url('admin/people/permissions'))),
+  );
+  if (!user_access('post comments', drupal_anonymous_user())) {
+    $form['ctsi']['ctsi_allow_anonymous_comments']['#disabled'] = TRUE;
+  }
+
+  $form['ctsi']['ctsi_revision_tab'] = array(
+    '#type' => 'checkbox',
+    '#default_value' => variable_get('ctsi_revision_tab_' . $form['#node_type']->type, 0),
+    '#title' => t('Display Revisions tab to all users'),
+    '#description' => t('If not checked, only users with edit permission on a node can see the Revisions tab'),
+  );
+}
+
+/**
+ * Implements hook_module_implements_alter().
+ *
+ * Ensure that certain hooks for this module run last, or at least more last.
+ */
+function op_common_module_implements_alter(&$implementations, $hook) {
+  switch ($hook) {
+    case 'form_alter':
+      if (isset($implementations['op_common'])) {
+        $mine = $implementations['op_common'];
+        unset($implementations['op_common']);
+        $implementations['op_common'] = $mine;
+      }
+      break;
+  }
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ *
+ * Standard node form changes.
+ */
+function op_common_form_node_form_alter(&$form, &$form_state) {
+  global $user;
+
+  // dpm(compact('form','form_state'), __FUNCTION__);
+
+  // don't let anonymous people edit nodes
+  // they did not create during this session
+  if (empty($user->uid)
+     and !empty($form['#node']->nid)
+     and $form['#node']->uid == 0
+     and empty($_SESSION['myideas'][$form['#node']->nid])
+  ) {
+    drupal_access_denied();
+    exit;
+  }
+
+  // rate_expiration hacking
+  foreach (preg_grep('/rate_expiration_/', array_keys($form)) as $key) {
+    // change godawful date select widget to marginally better date_text
+    foreach ($form[$key] as $k => $v) {
+      if (isset($v['#type']) and $v['#type'] == 'date_select') {
+        $form[$key][$k]['#type'] = 'date_text';
+        $form[$key][$k]['#size'] = 20;
+      }
+    }
+    // them move Rate Expiration fieldset to Publishing options
+    $form['options'][$key] = $form[$key];
+    unset($form[$key]);
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *  for node_delete_confirm form
+ */
+function op_common_form_node_delete_confirm_alter(&$form, &$form_state) {
+  global $user;
+
+  // don't let anonymous people delete ideas
+  // they did not create during this session
+  if (empty($user->uid)
+     and empty($_SESSION['myideas'][$form['nid']['#value']])
+  ) {
+    drupal_access_denied();
+    exit;
+  }
+}
+
+/**
+ * Utility function called by node form alter functions for Primary Author lookup.
+ */
+function op_common_setup_primary_author_autocomplete(&$form, &$form_state) {
+  // well that wasn't obscure or anything
+  //  http://drupal.stackexchange.com/a/66414/18349
+  $field_name = 'field_' . $form['#node']->type . '_lookup_pa';
+  if (isset($form[$field_name])) {
+    $langcode = field_language('node', $form['#node'], $field_name);
+    $form[$field_name][$langcode][0]['value']['#autocomplete_path'] = 'op/ajax/autocomplete_user';
+  }
+}
+
+/**
+ * Implements hook_features_pipe_COMPONENT_alter().
+ *
+ * Add custom OP variables for nodes
+ *
+ * @param array &$pipe
+ *   By reference. The pipe array of further processors that should be called.
+ * @param array $data
+ *   An array of machine names for the component in question to be exported.
+ * @param array $export
+ *   An array of all components to be exported with a given feature.
+ *
+ */
+function op_common_features_pipe_node_alter(&$pipe, $data, $export) {
+  $prefixes = array(
+    'ctsi_login_type_',
+    'ctsi_allow_anonymous_comments_',
+    'ctsi_revision_tab_',
+    // TODO ultimately remove this one, replaced by login type
+    'ctsi_allow_drupal_logins_',
+  );
+  foreach ($data as $type) {
+    // it doesn't pick this up on its own, apparently
+    foreach ($prefixes as $prefix) {
+      $pipe['variable'][] = $prefix . $type;
+    }
+  }
+}
+
+/**
+ * Implements hook_features_pipe_COMPONENT_alter().
+ *
+ * Add custom OP variables for vocabularies
+ */
+function op_common_features_pipe_taxonomy_alter(&$pipe, $data, $export) {
+  foreach ($data as $type) {
+    $pipe['variable'][] = op_common_variable_taxdef($type);
+  }
+}
+
+/**
+ * Implements hook_environment_switch().
+ */
+function op_common_environment_switch($target_env, $current_env) {
+  $modules = array(
+    'production' => array(
+      'enable' => array(
+        'googleanalytics',
+        'mollom',
+      ),
+      'disable' => array(
+        'field_tools_taxonomy',
+        'field_tools',
+        'reroute_email',
+        'stage_file_proxy',
+        'update',
+      ),
+    ),
+    'staging' => array(
+      'enable' => array(
+        'googleanalytics',
+        'mollom',
+        'reroute_email',
+        'stage_file_proxy',
+        'update',
+      ),
+    ),
+    'development' => array(
+      'enable' => array(
+        'field_tools_taxonomy',
+        'field_tools',
+        'reroute_email',
+        'stage_file_proxy',
+        'update',
+      ),
+      'disable' => array(
+        'googleanalytics',
+        'mollom',
+      ),
+    ),
+  );
+
+  return ctsi_environment_change($target_env, $current_env, $modules);
+
+}
+
+/**
+ * Utility function called by hook_node_load() functions in OP forum modules.
+ *
+ * @param object $node
+ *  Node object being loaded
+ *
+ * @todo Is this point about Context still true?
+ */
+function op_common_node_load_setup($node) {
+  $args = arg();
+  // default node context itself is only invoked on 'view' op
+  if ($args[0] == 'node' and $args[1] == $node->nid) {
+    context_node_condition($node, 'view');
+    ctsi_hide_edit_tab($node);
+  }
+}
+
+/**
+ * Utility function called by hook_node_insert() functions in OP forum modules.
+ *
+ * @param object $node
+ *  Node object being inserted
+ */
+function op_common_node_insert_setup($node) {
+  global $user;
+
+  // add node ID to session variable
+  //  used to allow anonymous posters to edit "their" nodes
+  //  for the duration of the session in which the nodes were created
+  if (empty($user->uid)) {
+    $_SESSION['myideas'][$node->nid] = $node->nid;
+  }
+}
+
+/**
+ * Utility function called by node form alter functions.
+ */
+function op_common_setup_revisions_fieldset(&$form, &$form_state) {
+
+  // move the Revisions fieldset out of the vertical tabs
+  // $form['revision_information']['#group'] = '';
+
+  // OR
+  // move the Revisions Log field out of the Revisions fieldset
+  if (!empty($form['#node']->nid)) {
+    // only bother when updating an existing entry
+    $form['log'] = $form['revision_information']['log'];
+    unset($form['revision_information']['log']);
+    // put it above Additional Settings (the vertical tabs)
+    $form['log']['#weight'] = 98;
+  }
+  // then hide the Revisions fieldset tab
+  $form['revision_information']['#access'] = FALSE;
+
+}
+
+/**
+ * Utility function called by node form alter functions.
+ */
+function op_common_setup_subscriptions_notify(&$form, &$form_state) {
+    if (!empty($form['#node']->nid) and !ctsi_is_admin()) {
+      // people who can't see Publishing options
+      //  will need to look for subscriptions_notify in the form input
+      $form['seek_subscriptions_notify'] = array(
+        '#type' => 'value',
+        '#value' => true,
+      );
+    }
+}
+
+/**
+ * After build node form function to monkey with Subscriptions fieldset
+ */
+function op_common_node_form_after_build_move_subscriptions($form, &$form_state) {
+  // dpm(compact('form','form_state'), __FUNCTION__);
+
+  // first, change the wording
+  $form['options']['subscriptions_notify']['subscriptions_notify']['#title'] = t('Send update notifications to followers');
+  $form['options']['subscriptions_notify']['note']['#description'] = t('Please <strong>uncheck</strong> for minor edits.');
+
+  // then, move it for normal editing
+  if (!empty($form['#node']->nid)) {
+    if (isset($form['options']['subscriptions_notify'])) {
+      // move Subscriptions temporary disablementingness out of Publishing options vertical tab
+      $form['subscriptions_notify'] = $form['options']['subscriptions_notify'];
+      unset($form['options']['subscriptions_notify']);
+
+      // if the Publishing Options tab was hidden, all the children have been hidden
+      $form['subscriptions_notify']['#access'] = TRUE;
+      foreach ($form['subscriptions_notify'] as $k => $v) {
+        if ($k{0} != '#') {
+          if (isset($v['#access']) and $v['#access'] === FALSE) {
+            $form['subscriptions_notify'][$k]['#access'] = TRUE;
+          }
+        }
+      }
+
+      // make this grouping a fieldset and give it a title
+      $form['subscriptions_notify']['#type'] = 'fieldset';
+      $form['subscriptions_notify']['#title'] = 'Email Notifications';
+    }
+    else {
+      // dpm('subscriptions_notify not found in ' . __FUNCTION__);
+    }
+  }
+  else {
+    // dpm('creating new node in ' . __FUNCTION__);
+  }
+  return $form;
+}
+
+
+/**
+ * Utility function called by hook_node_validate() functions in OP forum modules.
+ *
+ * @param object $node
+ *  Node object being validated
+ *
+ * @todo fix references to this
+ */
+function op_common_node_validate_setup($node, $form=null, &$form_state=null) {
+  global $user;
+  if ($form === null) {
+    $bt = debug_backtrace();
+    foreach ($bt as &$e) unset($e['args']);
+    dpm($bt, 'fix the call to ' . __FUNCTION__);
+  }
+
+  // don't allow anonymouses to edit other anonymous nodes
+  if (empty($user->uid) and !empty($node->nid) and empty($_SESSION['myideas'][$node->nid])) {
+    form_set_error(NULL, t('Anonymous users may only edit content created during a single session.'));
+  }
+
+  // the subscriptions_notify checkbox is normally in Publishing options
+  //  non-admin users can't see it there
+  //  so even if we expose the field to them,
+  //  the value doesn't get captured in a normal way.
+  //  adding an extra field is a hack to get around this.
+
+  if (!empty($form_state['values']['seek_subscriptions_notify'])) {
+    if (empty($form_state['input']['subscriptions_notify'])) {
+      // this would be 1 if it was checked. 
+      //  explicitly set this to zero to handle our form alter games
+      $form_state['values']['subscriptions_notify'] = 0;
+    }
+  }
+
+}
+
+/**
+ * Return allowed login type for a content type.
+ *
+ * @param string $type
+ *  The content type to check
+ * @return
+ *  A string value: 'drupal', 'saml', or 'all'
+ *
+ * @todo Remove the legacy "ctsi_allow_drupal_logins_NODETYPE" variable.
+ * @todo Fix that variable name to get rid of plural.
+ */
+function op_common_get_login_type($content_type) {
+  $login_type = variable_get('ctsi_login_type_' . $content_type, 'all');
+  if (!variable_get('ctsi_allow_drupal_logins_' . $content_type, 1)) {
+    $login_type = 'saml';
+  }
+  return $login_type;
+}
+
+/**
+ * Load Open Proposal login values for the given login type.
+ */
+function op_common_op_login_load($login_type) {
+  $op_login = new stdClass();
+  $op_login->type = $login_type;
+  $links = array();
+  $op_login->login_types = op_common_get_ctsi_login_types($login_type, $links);
+  // just use the links and let an actual forum theme it.
+  $op_login->text = implode(' | ', $links);
+  $op_login->links = implode(' | ', $links);
+  return $op_login;
+}
+
+function op_common_get_ctsi_login_types($op_login_type, &$links=array()) {
+  $login_types = array();
+  if ($op_login_type != 'drupal') {
+    if ($login_types['saml'] = ctsi_login_type_load('saml')) {
+      $links[] = $login_types['saml']->link;
+    }
+    else {
+      unset($login_types['saml']);
+    }
+  }
+  if ($op_login_type != 'saml') {
+    if ($login_types['drupal'] = ctsi_login_type_load('drupal')) {
+      $links[] = $login_types['drupal']->link;
+    }
+    else {
+      unset($login_types['drupal']);
+    }
+  }
+  return $login_types;
+}
+
+/**
+ * Theme an Open Proposal forum's login text
+ *
+ *  We will leave this to the actual theme.
+ */
+function theme_op_login_text($vars) {
+  // give them a normal login by default
+  $output = l(t('Log in to Drupal'), 'user');
+  extract($vars, EXTR_SKIP);
+
+  if (empty($login)) {
+    if (!empty($forum->login)) {
+      $login = $forum->login;
+    }
+    else {
+      if (empty($login_type)) {
+        if (empty($content_type)) {
+          dpm($vars, 'no useful values');
+          return $output;
+        }
+        $login_type = op_common_get_login_type($content_type);
+        if (empty($login_type)) {
+          dpm($vars, 'could not get login type for content type');
+          $login_type = 'all';
+        }
+      }
+      if (!($login = op_common_op_login_load($login_type))) {
+        dpm(array('vars'=>$vars, 'login_type' => $login_type), 'could not load login for login_type');
+      }
+    }
+  }
+  if (!empty($login)) {
+    if (empty($extra_path)) {
+      $output = $login->text;
+    }
+    else {
+      // rebuild login links
+      $links = array();
+      if ($login_type != 'drupal' and !empty($login->types['saml']->text)) {
+        $links[] = l($login->types['saml']->text, 'goto/login/saml/' . $extra_path);
+      }
+      if ($login_type != 'saml' and !empty($login->types['drupal']->text)) {
+        $links[] = l($login->types['drupal']->text, 'goto/login/drupal/' . $extra_path);
+      }
+      $output = implode(' | ', $links);
+    }
+  }
+  return $output;
+}
+
+/**
+ * Theme the text shown to a user prompting them to login to create content for an Open Proposal forum
+ */
+function theme_op_create_text($vars) {
+  $login_text = theme('op_login_text', $vars);
+  $nouns = empty($vars['nouns']) ? 'a proposal / idea' : $vars['nouns'];
+  $output = <<<EOT
+<h3 style="text-align:center">{$login_text} is required to create {$nouns}</h3>
+EOT;
+  return $output;
+}
+
+/**
+ * Common validation function for search views.
+ */
+function op_common_search_view_keys(&$vars) {
+  static $notyet = true;
+  if (empty($vars['view']->exposed_input['keys']) and $notyet) {
+    drupal_set_message(t('You must include at least one keyword with 3 characters or more.'), 'error');
+    $notyet = false;
+  }
+}
+
+/**
+ * Common markup changes for comment views.
+ */
+function op_common_comment_view_markup(&$vars) {
+  foreach ($vars['view']->result as $i => $row) {
+    if (node_mark($row->nid, $row->comment_node_changed)) {
+      $vars['rows'][$i] = '<span class="newtag2">NEW</span>' . $vars['rows'][$i];
+    }
+  }
+  foreach (array_keys($vars['classes']) as $i) {
+    if (is_string($vars['classes'][$i])) {
+      $vars['classes'][$i] .= ' comment-block-item';
+    }
+    elseif (is_array($vars['classes'][$i])) {
+      $vars['classes'][$i][] = ' comment-block-item';
+    }
+    else {
+      dpm($vars['classes'], __FUNCTION__ . ':' . $i . ' sees classes as something strange');
+    }
+  }
+}
+
+/**
+ * Common page markup changes
+ *
+ * @param $path
+ *  Path of current forum
+ */
+function op_common_page_markup(&$vars, $path) {
+  // if we're in our context and not on the main page,
+//  link the forum title to the main page
+  if (!empty($vars['node']) or $_GET['q'] != $path) {
+    if (!empty($vars['section_title'])) {
+      $vars['section_title'] = l($vars['section_title'], $path);
+    }
+  }
+
+  // explicitly add to page template files (for comments and other pages out of path)
+  $vars['template_files'][] = 'page--' . preg_replace('/[^a-z0-9]+/', '-', strtolower($path));
+}
+
+/**
+ * Common preprocessing for page displays of taxonomy view
+ *  (eg generic-forum-url/topic)
+ *  special case for Status taxonomy values
+ */
+function op_common_status_page_markup(&$vars, $type, $status_name) {
+  if (isset($vars['view']->args[0])) {
+    // we don't know how to handle multiple term IDs that include Status terms yet.
+    // so don't try.
+
+    $term = op_common_match_view_term_arg($vars['view']->args[0], $type);
+
+    if ($term) {
+      if ($term->vocabulary_machine_name == $status_name) {
+        // do NOT use custom ampersand-hacking filter function
+        // change "Xs on Term" to "Term Xs"
+        if ($title = $vars['view']->get_title() and $word = substr($title, 0, strpos($title, ' '))) {
+          $title = $term->name . ' ' . trim($word);
+        }
+        else {
+          $title = $term->name;
+        }
+        $vars['view']->set_title($title);
+      }
+    }
+  }
+}
+
+/**
+ * Common theme registry alteration stuff
+ */
+
+/**
+ * Return a "cloud" of taxonomy terms weighted by number of nodes
+ *  Front-end to new superdeluxe yet strangely useless 7.x version of Tagadelic
+ *
+ * @param array $names
+ *  An array of vocabulary machine names to be used.
+ * @param int $size
+ *  (Optional) Limit on number of terms to display. Default is 12.
+ * @return
+ *  A string containing a list of links with weight indicated by class names.
+ */
+function op_common_tagcloud($names, $size=12) {
+  $tags = array();
+  if (empty($names)) {
+    return '';
+  }
+  $names = (array)$names;
+  $list = "'" . implode("', '", $names) . "'";
+  $tids = array();
+  $sql = <<<EOQ
+select d.tid, count(i.nid) as nids
+from {taxonomy_term_data} d
+  join {taxonomy_vocabulary} v on d.vid = v.vid
+  join {taxonomy_index} i on d.tid = i.tid
+where v.machine_name in ({$list})
+group by d.tid
+EOQ;
+  if ($result = db_query($sql)) {
+    foreach ($result as $row) {
+      $tids[$row->tid] = $row->nids;
+      if (count($tids) == $size) {
+        break;
+      }
+    }
+  }
+  $terms = entity_load('taxonomy_term', array_keys($tids));
+  foreach ($terms as $tid => $term) {
+    $tags[$tid] = new TagadelicTag($tid, $term->name, $tids[$tid]);
+    $uri = entity_uri('taxonomy_term', $term);
+    $tags[$tid]->set_link($uri['path']);
+  }
+  $cloud = new TagadelicCloud(implode('-', $names), $tags);
+  drupal_add_css(drupal_get_path('module', 'tagadelic') . '/tagadelic.css');
+  $output = '';
+  foreach ($cloud->get_tags() as $tag) {
+    // apostrophes were turning into &amp;#039; etc.
+    $output .= filter_xss(html_entity_decode($tag)) . "\n";
+  }
+  return $output;
+}
+
+/**
+ * Get and set default vocabulary values by machine name.
+ */
+function op_common_variable_taxdef($machine_name) {
+  return 'op_common_taxdef_' . $machine_name;
+}
+function op_common_taxdef($machine_name, $value = NULL) {
+  $variable = op_common_variable_taxdef($machine_name);
+  if (is_array($value)) {
+    variable_set($variable, $value);
+  }
+  return variable_get($variable, array());
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ * Add checkboxes to vocabulary edit form for setting default terms.
+ */
+function op_common_form_taxonomy_form_vocabulary_alter(&$form, $form_state) {
+  // dpm(compact('form', 'form_state'), __FUNCTION__);
+  if (!empty($form['#vocabulary']->vid)) {
+    $vocabulary = $form['#vocabulary'];
+    $variable = op_common_variable_taxdef($vocabulary->machine_name);
+    $defaults = op_common_taxdef($vocabulary->machine_name);
+    $tids = array();
+    if ($tree = taxonomy_get_tree($vocabulary->vid)) {
+      $terms = array();
+      foreach ($tree as $term) {
+        $terms[$term->tid] = $term->name;
+        if (in_array($term->name, $defaults)) {
+          $tids[] = $term->tid;
+        }
+      }
+      $form[$variable] = array(
+        '#type' => 'checkboxes',
+        '#options' => $terms,
+        '#default_value' => $tids,
+        '#title' => t('Default term(s)'),
+      );
+      $form['#submit'][] = 'op_common_form_taxonomy_form_vocabulary_submit';
+    }
+  }
+}
+
+/**
+ * Set variable containing default term name(s) for vocabulary.
+ *
+ * @see op_common_form_taxonomy_form_vocabulary_alter()
+ */
+function op_common_form_taxonomy_form_vocabulary_submit($form, &$form_state) {
+  // dpm(compact('form', 'form_state'), __FUNCTION__);
+  if (!empty($form_state['values']['machine_name'])
+    and !empty($form_state['values']['old_machine_name'])
+  ) {
+    $variable = op_common_variable_taxdef($form_state['values']['machine_name']);
+    $old_variable = op_common_variable_taxdef($form_state['values']['old_machine_name']);
+    $vocabulary = $form_state['vocabulary'];
+    $defaults = array();
+    if ($tree = taxonomy_get_tree($vocabulary->vid)) {
+      foreach ($tree as $term) {
+        if (!empty($form_state['values'][$old_variable][$term->tid])) {
+          $defaults[] = $term->name;
+        }
+      }
+    }
+    op_common_taxdef($vocabulary->machine_name, $defaults);
+  }
+}
+
+/**
+ * Set up default value(s) for taxonomy field
+ *  Called from node form alter function
+ */
+function op_common_setup_status_default(&$form, $machine_name, $field_name = NULL) {
+  // dpm(compact('form','machine_name','field_name'), __FUNCTION__);
+  if (empty($form['#node']->nid)) {
+    if (empty($field_name)) {
+      $field_name = 'field_' . $machine_name;
+    }
+    if (empty($form[$field_name]['und']['#default_value'])) {
+      if ($defaults = op_common_taxdef($machine_name)) {
+        $entity = new EntityFieldQuery();
+        $result = $entity->entityCondition('entity_type', 'taxonomy_term')
+          ->entityCondition('bundle', $machine_name)
+          ->propertyCondition('name', $defaults, 'IN')
+          ->execute();
+        if (!empty($result['taxonomy_term'])) {
+          foreach ($result['taxonomy_term'] as $item) {
+            $form[$field_name]['und']['#default_value'][] = $item->tid;
+            if (empty($form[$field_name]['und']['#multiple'])) {
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *
+ *  Fix Subscriptions admin UI.
+ */
+function op_common_form_subscriptions_settings_form_alter(&$form, &$form_state) {
+  // dpm(compact('form','form_state'), __FUNCTION__);
+  _op_common_convert_select_fieldset($form['content'], 'subscriptions_unlisted_content_types', 'subscriptions_unlisted');
+  _op_common_convert_select_fieldset($form['content'], 'subscriptions_blocked_content_types', 'subscriptions_blocked');
+  _op_common_convert_select_fieldset($form['content']['static_content'], 'subscriptions_static_content_types', 'subscriptions_static');
+}
+
+/**
+ * Replace a multiple select field with a 'checkboxes' element
+ *  inside a collapsed fieldset.
+ */
+function _op_common_convert_select_fieldset(&$element, $select, $fieldset) {
+  $existing = $element[$select];
+  unset($element[$select]);
+  $element[$fieldset] = array(
+    '#type' => 'fieldset',
+    '#title' => $existing['#title'],
+    '#description' => $existing['#description'],
+    '#collapsible' => true,
+    '#collapsed' => true,
+  );
+  unset($existing['#title']);
+  unset($existing['#description']);
+  unset($existing['#options'][0]);
+  unset($existing['#multiple']);
+  $existing['#type'] = 'checkboxes';
+  $element[$fieldset][$select] = $existing;
+}
+
+/**
+ * Hack content to replace a node/add button with a beautytip with login links
+ *
+ * Typically called on block content from a preprocess function.
+ *
+ * @param string $content
+ *  The content to be changed
+ * @param string $node_type
+ *  Machine name of the type of node to be created
+ * @param string $create_path
+ *  The local path for creating a node of this type - eg "generic-forum-url/create"
+ * @param string $login_type
+ *  Optional specific login type (all, saml, or drupal)
+ *
+ * @return
+ *  The updated content
+ */
+function op_common_setup_nav_create_link($content, $node_type, $create_path, $login_type=NULL) {
+
+  $m = array();
+  preg_match('#<span class="button"><a.*?href=".*?' . $create_path . '".*?>(.*?)</a></span>#is', $content, $m);
+  $original = $m[0];
+  $html = $m[1];
+  if (empty($login_type)) {
+    $login_type = op_common_get_login_type($node_type);
+  }
+  $login_text = '';
+  switch ($login_type) {
+    case 'saml':
+      $login_text = <<<EOT
+<a href="/goto/login/saml/{$create_path}">Login&nbsp;with&nbsp;MyAccess</a>
+EOT;
+      break;
+
+    case 'drupal':
+      $login_text = <<<EOT
+<a href="/goto/login/drupal/{$create_path}">Login&nbsp;to&nbsp;Drupal</a>
+EOT;
+      break;
+
+    case 'all':
+    default:
+      $login_text = <<<EOT
+<a href="/goto/login/saml/{$create_path}">UCSF</a>
+&nbsp;|&nbsp;
+<a href="/goto/login/drupal/{$create_path}">non-UCSF</a>
+EOT;
+      break;
+  }
+  $replace = <<<EOT
+<div>
+<span class="clicktext btn addproposal">{$html}</span>
+<div class="clicktextlong" style="display:none;">
+Login is required:
+<br/>
+{$login_text}
+</div>
+</div>
+EOT;
+  // dpm(compact('original','replace'), 'fixing button');
+  $newcontent = str_replace($original, $replace, $content);
+
+  return $newcontent;
+}
+
+/**
+ * Implements hook_menu_local_tasks_alter()
+ *
+ *  Remove "Revisions" node tab from nodes for non-editors if the content type is set that way
+ */
+function op_common_menu_local_tasks_alter(&$data, $router_item, $root_path) {
+  // dpm(compact('data','router_item','root_path'), __FUNCTION__);
+  // $...['data']['tabs'][0]['output'][1]['#link']['path']
+
+  if (!empty($router_item['map'][0]) and !empty($data['tabs'][0]['output']) and $router_item['map'][0] == 'node' and is_object($router_item['map'][1])) {
+    $node = $router_item['map'][1];
+    $tabs = $data['tabs'][0]['output'];
+    foreach ($tabs as $i => $tab) {
+      if ($tab['#link']['path'] == 'node/%/revisions') {
+        if (!node_access('update', $node) and !variable_get('ctsi_revision_tab_' . $node->type, 0)) {
+          unset($data['tabs'][0]['output'][$i]);
+        }
+      }
+    }
+    if (count($data['tabs'][0]['output']) == 1 and $data['tabs'][0]['output'][0]['#link']['path'] == 'node/%/view') {
+      unset($data['tabs'][0]['output'][0]);
+    }
+  }
+}

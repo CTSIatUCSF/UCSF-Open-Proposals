@@ -1,0 +1,68 @@
+diff --git a/devel.mail.inc b/devel.mail.inc
+index 4d3a721..fc17cd9 100644
+--- a/devel.mail.inc
++++ b/devel.mail.inc
+@@ -1,21 +1,24 @@
+ <?php
++
+ /**
+  * @file
+- * MailSystemInterface for logging mails to the filesystem.
++ * Devel-provided MailSystemInterfaces for debugging mails.
+  *
+  * To enable, save a variable in settings.php (or otherwise) whose value
+- * can be as simple as:
++ * can be as simple as the following code:
+  *
+- * $conf['mail_system'] = array(
+- *   'default-system' => 'DevelMailLog',
+- *);
++ * @code
++ * $conf['mail_system'] = array('default-system' => 'DevelMailLog');
++ * @endcode
++ */
++
++/**
++ * Provides a mail system class that saves mail contents to temporary files.
+  *
+  * Saves to temporary://devel-mails dir by default. Can be changed using
+  * 'devel_debug_mail_directory' variable. Filename pattern controlled by
+  * 'devel_debug_mail_file_format' variable.
+- *
+  */
+-
+ class DevelMailLog extends DefaultMailSystem {
+ 
+   public function composeMessage($message) {
+@@ -76,4 +79,30 @@ class DevelMailLog extends DefaultMailSystem {
+     return variable_get('devel_debug_mail_directory', 'temporary://devel-mails');
+   }
+ }
+-?>
++
++/**
++ * Mail system class that displays mail with dpm() and logs with watchdog().
++ */
++class DevelDebugMailLog extends DefaultMailSystem {
++
++  /**
++   * Overrides DefaultMailSystem::mail().
++   *
++   * Accepts an e-mail message and displays it on screen, and additionally logs
++   * it to watchdog().
++   */
++  public function mail(array $message) {
++    $header = "To: {$message['to']} <br />Subject: {$message['subject']}";
++    $string = check_plain(print_r($message, TRUE));
++    $string = '<pre>' . $string . '</pre>';
++
++    dpm($message, $header);
++
++    // Don't actually use debug to display the message since we want to be able
++    // to categorize the watchdog type as 'mail' so it can be filterable in
++    // UI.
++    watchdog('mail', $header . ' ' . $string, NULL, WATCHDOG_INFO);
++
++    return TRUE;
++  }
++}

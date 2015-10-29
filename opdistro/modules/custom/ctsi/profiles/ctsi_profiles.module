@@ -1,0 +1,266 @@
+<?php
+
+/**
+ * @file
+ * CTSI custom module for storing UCSF Profiles links per user
+ */
+
+/**
+ * Modify output of theme(username) to add link to Profiles if found
+ *
+ */
+function ctsi_profiles_username($object) {
+  ctsi_profiles_homepage($object);
+  $tname = theme('username', array('account' => $object));
+  if (!empty($object->homepage) and strpos($tname, '<a') === FALSE) {
+    $tname = l($tname, $object->homepage);
+  }
+  return $tname;
+}
+
+/**
+ * Set homepage to UCSF Profiles URL of a user if it exists
+ *
+ * @param $object
+ *  The object being modified
+ */
+function ctsi_profiles_homepage(&$object) {
+  // if no homepage check for UCSF Profiles data for MyAccess accounts
+  if (!isset($object->homepage)) {
+    $object->homepage = FALSE;
+
+    $username = isset($object->name) ? $object->name : '';
+
+    if (empty($object->name) or (!empty($object->realname) and $object->name == $object->realname)) {
+      if (!empty($object->uid)) {
+        $nuser = user_load($object->uid);
+        $username = $nuser->name;
+      }
+      else {
+        // dpm("no username or uid on this thing");
+        // dpm($object);
+      }
+    }
+
+    if ($ctsiuser = ctsi_profiles_get_user($username)) {
+      if (isset($ctsiuser->profiles_url)) {
+        $object->homepage = $ctsiuser->profiles_url;
+      }
+    }
+  }
+}
+
+/**
+ * Static list of profile name records keyed by username.
+ */
+function ctsi_profiles_names($username = null, $record = null) {
+  $usernames = &drupal_static(__FUNCTION__, NULL);
+
+  if ($usernames === NULL) {
+    if ($cache = cache_get(__FUNCTION__)) {
+      $usernames = $cache->data;
+    }
+    else {
+      $usernames = array();
+    }
+  }
+  if ($record) {
+    $usernames[$username] = $record;
+    cache_set(__FUNCTION__, $usernames, 'cache');
+    return $usernames[$username];
+  }
+  if ($username) {
+    if (isset($usernames[$username])) {
+      return $usernames[$username];
+    }
+    return false;
+  }
+  return $usernames;
+}
+
+/**
+ * Look up information about a MyAccess username,
+ * including UCSF Profiles data if any
+ *
+ * @param $username
+ *  The username to find
+ *
+ * @return
+ *  A stdClass object matching the ctsi_profiles table if it exists, or NULL
+ */
+function ctsi_profiles_get_user($username) {
+
+  if (empty($username)) {
+    return;
+  }
+
+  if ($record = ctsi_profiles_names($username)) {
+    return $record;
+  }
+
+  if ($record = db_query('select * from ctsi_profiles where username = :username', array(':username' => $username))->fetch()) {
+    return ctsi_profiles_names($username, $record);
+  }
+
+  // look up a username on the UCSF Profiles site
+  $record = (object) array(
+    'username' => $username,
+    'profiles_url' => '',
+  );
+  if ($personid = ctsi_profiles_get_personid($username)) {
+    $record->personid = $personid;
+    $match = $personid;
+    $key = 'Person';
+  }
+  else {
+    $match = $username;
+    $key = 'ProfilesURLName';
+  }
+  if ($pdata = ctsi_profiles_get_ucsfprofile_json($match, $key)) {
+    if (!empty($pdata->Profiles[0]->ProfilesURL)) {
+      $record->profiles_url = $pdata->Profiles[0]->ProfilesURL;
+      // might as well save this
+      $record->profiles_data = $pdata;
+    }
+  }
+
+  // save search results as new record in database
+  //  save empty URL records to avoid constantly looking them up
+  // if (!empty($record->profiles_url)) {
+  //  but don't save name-based lookups(?) TODO: is that right?
+  if (!empty($record->personid)) {
+    drupal_write_record('ctsi_profiles', $record);
+  }
+  // }
+  return ctsi_profiles_names($username, $record);
+}
+
+/**
+ * Get a UCSF Profiles JSON record.
+ *  http://opendata.profiles.ucsf.edu/json-v2.html
+ *
+ * @param string $id
+ *  The value to match.
+ * @param string $key
+ *  The type of value being matched. Default is Person - the so-called "Profiles legacy Person ID".
+ */
+function ctsi_profiles_get_ucsfprofile_json($id, $key='Person') {
+  if ($key == 'Person') {
+    $match = ctsi_profiles_make_personid($id);
+  }
+  else {
+    $match = $id;
+  }
+  // identify ourselves to Profiles
+  $source = empty($_SERVER['HTTP_HOST']) ? 'Accelerate/OpenProposals' : $_SERVER['HTTP_HOST'];
+  $source = variable_get('ucsfprofiles_source', $source);
+  // we are always going to the real Profiles site. because someone said so.
+  //  old style
+  // $jsonurl = 'http://profiles.ucsf.edu/CustomAPI/v1/JSONProfile.aspx?Person=' . $personid;
+  //  new style v1 test
+  // $jsonurl = 'http://stage.profiles.ucsf.edu/CustomAPI/v1/JSONProfile.aspx?source=' . urlencode($source) . '&Person=' . $personid;
+  //  new style v1 live
+  // $jsonurl = 'http://profiles.ucsf.edu/CustomAPI/v1/JSONProfile.aspx?source=' . urlencode($source) . '&Person=' . $personid;
+
+  // v2
+  $jsonurl = 'http://api.profiles.ucsf.edu/json/v2/?source=' . urlencode($source) . '&' . $key . '=' . urlencode($match);
+
+  // this is creating a PHP warning on the 404 if there's no entry in Profiles for this person
+  if ($json = @file_get_contents($jsonurl)) {
+    if ($data = json_decode($json)) {
+      // dpm(array('jsonurl'=>$jsonurl, 'json'=>$json, 'data'=>$data));
+      return $data;
+    }
+  }
+}
+
+/**
+ * Change a variety of other UCSF IDs into a UCSF Profiles PersonID
+ *  @param $id
+ *    An ID string
+ *  @return $personid
+ *    A UCSF Profiles PersonID if one can be made from $id,
+ *    else original value of $id
+ */
+function ctsi_profiles_make_personid($id) {
+  if ($value = ctsi_profiles_get_personid($id)) {
+    return $value;
+  }
+  return $id;
+}
+
+/**
+ * Change a variety of other UCSF IDs into a UCSF Profiles PersonID
+ *  return personid or NULL
+ */
+function ctsi_profiles_get_personid($id) {
+  $personid = NULL;
+  if (is_numeric($id) and strlen($id) == 7 and substr($id, 0, 2) != '02' and substr($id, 0, 1) != '2') {
+    // this IS a PersonID. tabun.
+    $personid = $id;
+  }
+  elseif ($personid = ctsi_profiles_employeeid_to_personid($id)) {
+    // yep
+  }
+  elseif ($personid = ctsi_profiles_eppn_to_personid($id)) {
+    // uh huh
+  }
+  elseif ($personid = ctsi_profiles_myaccess_to_personid($id)) {
+    // ok
+  }
+  return $personid;
+}
+
+/**
+ * Change an EmployeeID into a UCSF Profiles PersonID
+ */
+function ctsi_profiles_employeeid_to_personid($id) {
+  if (strpos($id, '02') === 0 and strlen($id) == 9) {
+    return floor($id / 10) + 2569307;
+  }
+  return false;
+}
+
+/**
+ * Change an EPPN into a UCSF Profiles PersonID
+ */
+function ctsi_profiles_eppn_to_personid($id) {
+  if ($atpos = strpos($id, '@') and $value = substr($id, 0, $atpos) and strlen($value) == 6 and is_numeric($value)) {
+    return intval('2' . $value) + 2569307;
+  }
+  return false;
+}
+
+/**
+ * Change a MyAccess ID into a UCSF Profiles PersonID
+ */
+function ctsi_profiles_myaccess_to_personid($id) {
+  if (stripos($id, 'SF') === 0 and $value = substr($id, 2) and strlen($value) == 6 and is_numeric($value)) {
+    return intval('2' . $value) + 2569307;
+  }
+  return false;
+}
+
+/**
+ * Return the UCSF Profiles data for a user if available,
+ *  and set it as a property of the passed-in object
+ */
+function ctsi_profiles_ucsfprofiles_data(&$account) {
+  if (!isset($account->ucsfprofiles_data)) {
+    if ($record = ctsi_profiles_get_user($account->name)) {
+      // this is a MyAccess user, check for Profiles info
+      if (empty($record->profiles_data)) {
+        $record->profiles_data = ctsi_profiles_get_ucsfprofile_json($record->personid);
+        // save this data to the static list
+        ctsi_profiles_names($account->name, $record);
+      }
+      $account->ucsfprofiles_data = $record->profiles_data;
+    }
+    else {
+      // this is not a MyAccess user, or some kind of FAIL
+      // drupal_set_message("user {$account->name} is not a MyAccess person. or X", null);
+      $account->ucsfprofiles_data = false;
+    }
+  }
+  return $account->ucsfprofiles_data;
+}

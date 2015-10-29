@@ -1,0 +1,15 @@
+Index: emaillog/emaillog.module
+===================================================================
+--- emaillog/emaillog.module	(revision 11747)
++++ emaillog/emaillog.module	(working copy)
+@@ -276,7 +276,9 @@
+     && is_array($debug_info['debug_backtrace()'])
+     && variable_get('emaillog_backtrace_replace_args', TRUE)
+   ) {
+-    foreach ($debug_info['debug_backtrace()'] as $trace_key => $trace) {
++    foreach ($debug_info['debug_backtrace()'] as $trace_key => &$trace) {
++      unset($trace['args']);
++      continue;
+       $args = array();
+       if (isset($trace['args']) && is_array($trace['args'])) {
+         foreach ($trace['args'] as $key => $value) {

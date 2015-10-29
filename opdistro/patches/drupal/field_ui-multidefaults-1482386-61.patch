@@ -1,0 +1,15 @@
+diff --git a/modules/field_ui/field_ui.admin.inc b/modules/field_ui/field_ui.admin.inc
+index 5d74a5c..75ce992 100644
+--- a/modules/field_ui/field_ui.admin.inc
++++ b/modules/field_ui/field_ui.admin.inc
+@@ -1999,8 +1999,8 @@ function field_ui_default_value_widget($field, $instance, &$form, &$form_state)
+   $instance['required'] = FALSE;
+   $instance['description'] = '';
+ 
+-  // @todo Allow multiple values (requires more work on 'add more' JS handler).
+-  $element += field_default_form($instance['entity_type'], NULL, $field, $instance, LANGUAGE_NONE, $items, $element, $form_state, 0);
++  // @todo Allow unlimited values (requires more work on 'add more' JS handler).
++  $element += field_default_form($instance['entity_type'], NULL, $field, $instance, LANGUAGE_NONE, $items, $element, $form_state);
+ 
+   return $element;
+ }

@@ -1,0 +1,8 @@
+name = "CTSI Context Plugins"
+dependencies[] = "context"
+description = "CTSI custom Context condition and reaction plugins"
+package = "CTSI"
+core = 7.x
+
+files[] = plugins/ctsi_context_context_condition_destination.inc
+files[] = plugins/ctsi_context_context_condition_nodetype_path.inc

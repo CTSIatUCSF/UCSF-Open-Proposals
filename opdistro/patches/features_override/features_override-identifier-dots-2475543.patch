@@ -1,0 +1,26 @@
+diff --git a/features_override.export.inc b/features_override.export.inc
+index 49182b6..e0d64fe 100644
+--- a/features_override.export.inc
++++ b/features_override.export.inc
+@@ -17,16 +17,15 @@
+  * @see features_override_make_key()
+  */
+ function features_override_parse_identifier($identifier) {
+-  $first_period = strpos($identifier, '.');
+-  $component = substr($identifier, 0, $first_period);
+-  if ($second_period = strpos($identifier, '.', $first_period + 1)) {
+-    $element = substr($identifier, $first_period + 1, $second_period - $first_period - 1);
+-    $keys = substr($identifier, $second_period + 1);
++  $parts = explode('.', $identifier);
++  $component = array_shift($parts);
++  if (count($parts) > 1) {
++    $keys = array_pop($parts);
+   }
+   else {
+-    $element = substr($identifier, $first_period + 1);
+     $keys = FALSE;
+   }
++  $element = implode('.', $parts);
+   return array($component, $element, $keys);
+ }
+ 

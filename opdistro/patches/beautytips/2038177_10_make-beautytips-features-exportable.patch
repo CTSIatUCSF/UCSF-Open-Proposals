@@ -1,0 +1,515 @@
+diff --git a/beautytips_manager.features.inc b/beautytips_manager.features.inc
+new file mode 100644
+index 0000000..d10551b
+--- /dev/null
++++ b/beautytips_manager.features.inc
+@@ -0,0 +1,397 @@
++<?php
++
++function _beautytips_machine_name_utility($op, $id, $type = NULL) {
++
++  if ($op == 'encode') {
++
++    if (!empty($id) && !empty($type)) {
++      $string = $id . '|' . $type;
++      $hash = base64_encode($string);
++      $machine_name = strtr($hash, array('+' => '-', '/' => '_', '=' => ''));
++
++      return $machine_name;
++    }
++    else {
++      watchdog("beautytips features", "There was an error creating a machine_name.");
++    }
++  }
++
++  if ($op == 'decode') {
++    // Remove module name off of $id, so we can work with the encoded string.
++    $split = explode('|', $id);
++    $decoded = base64_decode($split[1]);
++    $p = explode('|', $decoded);
++
++    $parts = new stdClass();
++    $parts->id = $p[0];
++    $parts->type = $p[1];
++
++    return $parts;
++  }
++}
++
++###################################
++#      Beautytips Custom Tips     #
++###################################
++
++/**
++ * Implementation of hook_features_export_options. [component_hook]
++ *
++ * @return array
++ *   A keyed array of items, suitable for use with a FormAPI select or
++ *   checkboxes element.
++ */
++function beautytips_custom_tips_features_export_options() {
++
++  $options = array();
++
++  // Clear beautytips custom tips static cache so the options will populate correctly.
++  drupal_static_reset('beautytips_custom_tips');
++
++  // Get custom tips.
++  $tips = beautytips_manager_get_custom_tips();
++
++  foreach ($tips as $record) {
++    // Make a machine name.
++    $machine_name = !empty($record->machine_name) ? $record->machine_name : _beautytips_machine_name_utility('encode', $record->id, $record->element);
++    $options[$machine_name] = $record->element;
++  }
++
++  return $options;
++}
++
++/**
++ * Implementation of hook_features_export [component hook]
++ *
++ * @param array   $data
++ *   this is the machine name for the component in question
++ * @param array   &$export
++ *   array of all components to be exported
++ * @param string  $module
++ *   The name of the feature module to be generated.
++ * @return array
++ *   The pipe array of further processors that should be called
++ */
++function beautytips_custom_tips_features_export($data, &$export, $module) {
++
++  $export['dependencies']['beautytips_manager'] = 'beautytips_manager';
++  $export['dependencies']['beautytips'] = 'beautytips';
++  foreach ($data as $component) {
++    // Make sure our machine name is good.
++    if (strpos($component, $module) === FALSE) {
++      $component = $module . '|' . $component;
++    }
++    $export['features']['beautytips_custom_tips'][$component] = $component;
++  }
++
++  return array();
++}
++
++/**
++ * Implementation of hook_features_export_render. [component hook]
++ *
++ * Render one or more component objects to code.
++ *
++ * @param string  $module
++ *   The name of the feature module to be exported.
++ * @param array   $data
++ *   An array of machine name identifiers for the objects to be rendered.
++ * @param array   $export
++ *   The full export array of the current feature being exported. This is only
++ *   passed when hook_features_export_render() is invoked for an actual feature
++ *   update or recreate, not during state checks or other operations.
++ * @return array
++ *   An associative array of rendered PHP code where the key is the name of the
++ *   hook that should wrap the PHP code. The hook should not include the name
++ *   of the module, e.g. the key for `hook_example` should simply be `example`.
++ */
++function beautytips_custom_tips_features_export_render($module, $data, $export) {
++
++  $items = array();
++  foreach ($data as $identifier) {
++
++    // Make sure our machine name is good.
++    if (strpos($identifier, $module) === FALSE) {
++      $identifier = $module . '|' . $identifier;
++    }
++
++    // Check to see if we already exist.
++    $item = _beautytips_custom_tips_get_tip($identifier);
++
++    if (empty($item)) { // New item to features.
++      // The identifier is an encoded string which holds the original
++      // id and element details. Get it so we can grap the right tip.
++      $parts = _beautytips_machine_name_utility('decode', $identifier);
++      $tip_id = $parts->id;
++      $element = $parts->type;
++
++      // I am new and do not have a machine name in the db table yet. Get the
++      // original $tip.
++      $item = _beautytips_get_original_custom_tip($tip_id, $element);
++
++      // If we are exporting then set the machine name to what it needs to be.
++      if (!empty($export) && is_object($item)) {
++        $item->machine_name = $identifier;
++
++        // Update the original record with the machine name so features
++        // will now owns the item.
++        drupal_write_record('beautytips_custom_tips', $item, 'id');
++      }
++    }
++
++    if (is_object($item)) {
++      // We don't want the tip id in our feature code.
++      unset($item->id);
++      $items[$identifier] = $item;
++    }
++  }
++
++  if (count($items)) {
++    $code = "\n  \$items = array();";
++    $code .= "\n\n  \$items = " . features_var_export($items, '  ') . ";\n\n";
++    $code .= '  return $items;';
++  }
++
++  return array('beautytips_custom_tips' => $code);
++}
++
++/**
++ * Implements COMPONENT_features_enable_feature().
++ */
++function beautytips_custom_tips_features_enable_feature($module) {
++  beautytips_custom_tips_features_rebuild($module);
++}
++
++/**
++ * Implementation of hook_features_revert(). [component_hook]
++ */
++function beautytips_custom_tips_features_revert($module) {
++  beautytips_custom_tips_features_rebuild($module);
++}
++
++/**
++ * Implementation of hook_features_rebuild(). [component_hook]
++ */
++function beautytips_custom_tips_features_rebuild($module) {
++  if ($defaults = features_get_default('beautytips_custom_tips', $module)) {
++    foreach ($defaults as $id => $tip) {
++      $tip = (object) $tip;
++
++      // See if the record already exist.
++      $exist = _beautytips_custom_tips_get_tip($tip->machine_name);
++      if ($exist) {
++        // Update the record.
++        drupal_write_record('beautytips_custom_tips', $tip, 'machine_name');
++      }
++      else {
++        // Insert the record.
++        drupal_write_record('beautytips_custom_tips', $tip);
++      }
++    }
++    cache_clear_all('beautytips:beautytips-ui-custom-tips', 'cache');
++    drupal_static_reset('beautytips_custom_tips');
++  }
++}
++
++/**
++ * Get a custom tip based on the machine_name.
++ */
++function _beautytips_custom_tips_get_tip($machine_name) {
++  if (!empty($machine_name)) {
++    $record = db_query("SELECT * FROM {beautytips_custom_tips} WHERE machine_name = :machine_name", array(':machine_name' => $machine_name))->fetchObject();
++
++    return $record;
++  }
++}
++
++/**
++ * Retrieves a single custom beautytip.
++ */
++function _beautytips_get_original_custom_tip($id, $element) {
++  $sql = "SELECT * FROM {beautytips_custom_tips} WHERE id = :id AND element = :element";
++  $record = db_query($sql, array(':id' => $id, ':element' => $element))->fetchObject();
++  return $record;
++}
++
++###################################
++#    Beautytips Custom Styles     #
++###################################
++
++/**
++ * Implementation of hook_features_export_options. [component_hook]
++ *
++ * @return array
++ *   A keyed array of items, suitable for use with a FormAPI select or
++ *   checkboxes name.
++ */
++function beautytips_custom_styles_features_export_options() {
++
++  $options = array();
++
++  // Clear beautytips custom styles static cache so the options will populate correctly.
++  drupal_static_reset('beautytips_custom_styles');
++
++  // Get custom styles.
++  $styles = beautytips_manager_get_custom_styles();
++
++  foreach ($styles as $record) {
++    // Make a machine name.
++    $machine_name = !empty($record->machine_name) ? $record->machine_name : _beautytips_machine_name_utility('encode', $record->id, $record->name);
++    $options[$machine_name] = $record->name;
++  }
++
++  return $options;
++}
++
++/**
++ * Implementation of hook_features_export [component hook]
++ *
++ * @param array   $data
++ *   this is the machine name for the component in question
++ * @param array   &$export
++ *   array of all components to be exported
++ * @param string  $module
++ *   The name of the feature module to be generated.
++ * @return array
++ *   The pipe array of further processors that should be called
++ */
++function beautytips_custom_styles_features_export($data, &$export, $module) {
++
++  $export['dependencies']['beautytips_manager'] = 'beautytips_manager';
++  $export['dependencies']['beautytips'] = 'beautytips';
++  foreach ($data as $component) {
++    // Make sure our machine name is good.
++    if (strpos($component, $module) === FALSE) {
++      $component = $module . '|' . $component;
++    }
++    $export['features']['beautytips_custom_styles'][$component] = $component;
++  }
++
++  return array();
++}
++
++/**
++ * Implementation of hook_features_export_render. [component hook]
++ *
++ * Render one or more component objects to code.
++ *
++ * @param string  $module
++ *   The name of the feature module to be exported.
++ * @param array   $data
++ *   An array of machine name identifiers for the objects to be rendered.
++ * @param array   $export
++ *   The full export array of the current feature being exported. This is only
++ *   passed when hook_features_export_render() is invoked for an actual feature
++ *   update or recreate, not during state checks or other operations.
++ * @return array
++ *   An associative array of rendered PHP code where the key is the name of the
++ *   hook that should wrap the PHP code. The hook should not include the name
++ *   of the module, e.g. the key for `hook_example` should simply be `example`.
++ */
++function beautytips_custom_styles_features_export_render($module, $data, $export) {
++
++  $items = array();
++  foreach ($data as $identifier) {
++
++    // Make sure our machine name is good.
++    if (strpos($identifier, $module) === FALSE) {
++      $identifier = $module . '|' . $identifier;
++    }
++
++    // Check to see if we already exist.
++    $item = _beautytips_custom_styles_get_style($identifier);
++
++    if (empty($item)) { // New item to features.
++      // The identifier is an encoded string which holds the original
++      // id and name details. Get it so we can grap the right style.
++      $parts = _beautytips_machine_name_utility('decode', $identifier);
++      $style_id = $parts->id;
++      $name = $parts->type;
++
++      // I am new and do not have a machine name in the db table yet. Get the
++      // original $style.
++      $item = _beautytips_get_original_custom_style($style_id, $name);
++
++      // If we are exporting then set the machine name to what it needs to be.
++      if (!empty($export) && is_object($item)) {
++        $item->machine_name = $identifier;
++
++        // Update the original record with the machine name so features
++        // will now owns the item.
++        drupal_write_record('beautytips_custom_styles', $item, 'id');
++      }
++    }
++
++    if (is_object($item)) {
++      // We don't want the style id in our feature code.
++      unset($item->id);
++      $items[$identifier] = $item;
++    }
++  }
++
++  if (count($items)) {
++    $code = "\n  \$items = array();";
++    $code .= "\n\n  \$items = " . features_var_export($items, '  ') . ";\n\n";
++    $code .= '  return $items;';
++  }
++
++  return array('beautytips_custom_styles' => $code);
++}
++
++/**
++ * Implements COMPONENT_features_enable_feature().
++ */
++function beautytips_custom_styles_features_enable_feature($module) {
++  beautytips_custom_styles_features_rebuild($module);
++}
++
++/**
++ * Implementation of hook_features_revert(). [component_hook]
++ */
++function beautytips_custom_styles_features_revert($module) {
++  beautytips_custom_styles_features_rebuild($module);
++}
++
++/**
++ * Implementation of hook_features_rebuild(). [component_hook]
++ */
++function beautytips_custom_styles_features_rebuild($module) {
++  if ($defaults = features_get_default('beautytips_custom_styles', $module)) {
++    foreach ($defaults as $id => $style) {
++      $style = (object) $style;
++
++      // See if the record already exist.
++      $exist = _beautytips_custom_styles_get_style($style->machine_name);
++      if ($exist) {
++        // Update the record.
++        drupal_write_record('beautytips_custom_styles', $style, 'machine_name');
++      }
++      else {
++        // Insert the record.
++        drupal_write_record('beautytips_custom_styles', $style);
++      }
++    }
++    cache_clear_all('beautytips:beautytips-styles', 'cache');
++    drupal_static_reset('beautytips_custom_styles');
++  }
++}
++
++/**
++ * Get a custom style based on the machine_name.
++ */
++function _beautytips_custom_styles_get_style($machine_name) {
++  if (!empty($machine_name)) {
++    $record = db_query("SELECT * FROM {beautytips_custom_styles} WHERE machine_name = :machine_name", array(':machine_name' => $machine_name))->fetchObject();
++
++    return $record;
++  }
++}
++
++/**
++ * Retrieves a single custom beautystyle.
++ */
++function _beautytips_get_original_custom_style($id, $name) {
++  $sql = "SELECT * FROM {beautytips_custom_styles} WHERE id = :id AND name = :name";
++  $record = db_query($sql, array(':id' => $id, ':name' => $name))->fetchObject();
++  return $record;
++}
+diff --git a/beautytips_manager.install b/beautytips_manager.install
+index 17e36e3..bc865fc 100755
+--- a/beautytips_manager.install
++++ b/beautytips_manager.install
+@@ -98,6 +98,11 @@ function beautytips_manager_schema() {
+         'unsigned' => TRUE,
+         'description' => t('Whether or not this tip is enabled'),
+       ),
++      'machine_name' => array(
++        'type' => 'varchar',
++        'length' => 255,
++        'description' => 'The machine name.',
++      ),
+     ),
+     'primary key' => array('id'),
+   );
+@@ -210,6 +215,11 @@ function beautytips_manager_schema() {
+         'length' => 32,
+         'not null' => FALSE,
+       ),
++      'machine_name' => array(
++        'type' => 'varchar',
++        'length' => 255,
++        'description' => 'The machine name.',
++      ),
+     ),
+     'primary key' => array('id'),
+   );
+@@ -271,3 +281,47 @@ function beautytips_manager_update_7002() {
+     'not null' => TRUE,
+   ));
+ }
++
++/**
++ * Update to add machine_name to custom tips.
++ */
++function beautytips_manager_update_7003() {
++  $ret = array();
++
++  // Make sure this field doesn't already exist.
++  if (db_field_exists('beautytips_custom_tips', 'machine_name')) {
++    return $ret;
++  }
++
++  $spec = array(
++    'type' => 'varchar',
++    'length' => 255,
++    'description' => 'The machine name.',
++  );
++
++  db_add_field('beautytips_custom_tips', 'machine_name', $spec);
++
++  return $ret;
++}
++
++/**
++ * Update to add machine_name to custom styles.
++ */
++function beautytips_manager_update_7004() {
++  $ret = array();
++
++  // Make sure this field doesn't already exist.
++  if (db_field_exists('beautytips_custom_styles', 'machine_name')) {
++    return $ret;
++  }
++
++  $spec = array(
++    'type' => 'varchar',
++    'length' => 255,
++    'description' => 'The machine name.',
++  );
++
++  db_add_field('beautytips_custom_styles', 'machine_name', $spec);
++
++  return $ret;
++}
+\ No newline at end of file
+diff --git a/beautytips_manager.module b/beautytips_manager.module
+index 946842b..5ad8285 100755
+--- a/beautytips_manager.module
++++ b/beautytips_manager.module
+@@ -356,3 +356,30 @@ function beautytips_manager_define_beautytips_styles() {
+   return $styles;
+ }
+ 
++/**
++ * Implementation of hook_features_api
++ *
++ * Here we define the components that we want to make exportable.  For this
++ * particular module, we want to make the configurations exportable.
++ */
++function beautytips_manager_features_api() {
++
++  $components = array(
++    'beautytips_custom_styles' => array(
++      'name' => 'BeautyTips Custom Styles',
++      'file' => drupal_get_path('module', 'beautytips_manager') . '/beautytips_manager.features.inc',
++      'default_hook' => 'beautytips_custom_styles',
++      'feature_source' => TRUE,
++      'default_file' => FEATURES_DEFAULTS_INCLUDED,
++    ),
++    'beautytips_custom_tips' => array(
++      'name' => 'BeautyTips Custom Tips',
++      'file' => drupal_get_path('module', 'beautytips_manager') . '/beautytips_manager.features.inc',
++      'default_hook' => 'beautytips_custom_tips',
++      'feature_source' => TRUE,
++      'default_file' => FEATURES_DEFAULTS_INCLUDED,
++    ),
++  );
++
++  return $components;
++}

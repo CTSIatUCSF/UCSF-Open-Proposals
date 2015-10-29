@@ -1,0 +1,265 @@
+diff --git a/reroute_email.admin.inc b/reroute_email.admin.inc
+index b82aec8..fd4ba4e 100644
+--- a/reroute_email.admin.inc
++++ b/reroute_email.admin.inc
+@@ -15,15 +15,44 @@ function reroute_email_settings() {
+     '#default_value' => variable_get(REROUTE_EMAIL_ENABLE, 0),
+     '#description'   => t('Check this box if you want to enable email rerouting. Uncheck to disable rerouting.'),
+   );
+-  $form[REROUTE_EMAIL_ADDRESS] = array(
++    // '#default_value' => variable_get(REROUTE_EMAIL_ADDRESS, variable_get('site_mail', ini_get('sendmail_from'))),
++  $form[REROUTE_EMAIL_TO] = array(
++    '#type'          => 'textarea',
++    '#title'         => t('Destination email addresses'),
++    '#default_value' => reroute_email_destination(),
++    '#description'   => t('Provide a space, comma, or semicolon-delimited list of email addresses to reroute email messages to.<br/> If the field is empty and no value is provided, <strong>all outgoing emails would be aborted</strong> and the email would be recorded in the <a href="@dblog">recent log entries</a>.', array('@dblog' => url('admin/reports/dblog'))),
++    '#states' => array(
++      'visible' => array(':input[name=reroute_email_enable]' => array('checked' => TRUE)),
++    ),
++  );
++
++  $form['whitelist'] = array(
++    '#type' => 'fieldset',
++    '#title' => t('Whitelists'),
++    '#description' => t('Permit delivery to these addresses and/or domains. Mail for non-whitelisted email addresses will be rerouted to the destination addresses above.'),
++    '#states' => array(
++      'visible' => array(':input[name=reroute_email_enable]' => array('checked' => TRUE)),
++    ),
++  );
++  $form['whitelist'][REROUTE_EMAIL_WHITELIST] = array(
++    '#type'          => 'textarea',
++    '#title'         => t('Email address whitelist'),
++    '#default_value' => variable_get(REROUTE_EMAIL_WHITELIST, REROUTE_EMAIL_DEFAULT_ADDRESS),
++    '#description'   => t('Provide a space, comma, semicolon, or newline-delimited list of email addresses to permit delivery to.'),
++    '#states' => array(
++      'visible' => array(':input[name=reroute_email_enable]' => array('checked' => TRUE)),
++    ),
++  );
++  $form['whitelist'][REROUTE_EMAIL_DOMAIN_WHITELIST] = array(
+     '#type'          => 'textfield',
+-    '#title'         => t('Email addresses'),
+-    '#default_value' => variable_get(REROUTE_EMAIL_ADDRESS, variable_get('site_mail', ini_get('sendmail_from'))),
+-    '#description'   => t('Provide a space, comma, or semicolon-delimited list of email addresses to pass through. Every destination email address which is not on this list will be rerouted to the first address on the list.<br/> If the field is empty and no value is provided, <strong>all outgoing emails would be aborted</strong> and the email would be recorded in the <a href="@dblog">recent log entries</a>.', array('@dblog' => url('admin/reports/dblog'))),
++    '#title'         => t('Domain whitelist'),
++    '#default_value' => variable_get(REROUTE_EMAIL_DOMAIN_WHITELIST, ''),
++    '#description'   => t('Provide a space, comma, or semicolon-delimited list of domains to permit delivery to.'),
+     '#states' => array(
+       'visible' => array(':input[name=reroute_email_enable]' => array('checked' => TRUE)),
+     ),
+   );
++
+   $form[REROUTE_EMAIL_ENABLE_MESSAGE] = array(
+     '#type' => 'checkbox',
+     '#title' => t('Show rerouting description in mail body'),
+@@ -42,11 +71,25 @@ function reroute_email_settings() {
+  */
+ function reroute_email_settings_validate($form, $form_state) {
+   if ($form_state['values']['reroute_email_enable'] == TRUE) {
+-    // Allow splitting emails by space, comma, semicolon.
+-    $addresslist = preg_split(REROUTE_EMAIL_EMAIL_SPLIT_RE, $form_state['values']['reroute_email_address'], -1, PREG_SPLIT_NO_EMPTY);
+-    foreach ($addresslist as $address) {
++    // Destination addresses.
++    $destination = reroute_email_split_string($form_state['values'][REROUTE_EMAIL_TO]);
++    foreach ($destination as $address) {
+       if (!valid_email_address($address)) {
+-        form_set_error('reroute_email_address', t('@address is not a valid email address', array('@address' => $address)));
++        form_set_error(REROUTE_EMAIL_TO, t('@address is not a valid email address', array('@address' => $address)));
++      }
++    }
++    // Whitelisted addresses.
++    $whitelist = reroute_email_split_string($form_state['values'][REROUTE_EMAIL_WHITELIST]);
++    foreach ($whitelist as $address) {
++      if (!valid_email_address($address)) {
++        form_set_error(REROUTE_EMAIL_WHITELIST, t('@address is not a valid email address', array('@address' => $address)));
++      }
++    }
++    // Whitelisted domains.
++    $domain_whitelist = reroute_email_split_string($form_state['values'][REROUTE_EMAIL_DOMAIN_WHITELIST]);
++    foreach ($domain_whitelist as $domain) {
++      if (!valid_email_address("user@" . $domain)) {
++        form_set_error(REROUTE_EMAIL_DOMAIN_WHITELIST, t('@domain is not a valid domain', array('@domain' => $domain)));
+       }
+     }
+   }
+@@ -59,7 +102,6 @@ function reroute_email_test_email_form() {
+   return array(
+     'addresses' => array(
+       '#type' => 'fieldset',
+-      '#description' => t('Email addresses are not validated: any valid or invalid email address format could be submitted.'),
+       'to' => array(
+         '#type' => 'textfield',
+         '#title' => t('To'),
+diff --git a/reroute_email.install b/reroute_email.install
+index 093a0bf..6cb880d 100644
+--- a/reroute_email.install
++++ b/reroute_email.install
+@@ -9,7 +9,9 @@
+  * Implements hook_uninstall().
+  */
+ function reroute_email_uninstall() {
++  variable_del('reroute_email_to');
+   variable_del('reroute_email_address');
+-  variable_del('reroute_email_enable');
++  variable_del('reroute_email_domain_whitelist');
+   variable_del('reroute_email_enable_message');
++  variable_del('reroute_email_enable');
+ }
+diff --git a/reroute_email.module b/reroute_email.module
+index 400aa4f..cbe5460 100644
+--- a/reroute_email.module
++++ b/reroute_email.module
+@@ -6,15 +6,19 @@
+  */
+ 
+ define('REROUTE_EMAIL_ADDRESS', 'reroute_email_address');
++
++define('REROUTE_EMAIL_TO', 'reroute_email_to');
++
++// This constant name does not match the variable name for historical reasons.
++define('REROUTE_EMAIL_WHITELIST', 'reroute_email_address');
++
++define('REROUTE_EMAIL_DOMAIN_WHITELIST', 'reroute_email_domain_whitelist');
++
+ define('REROUTE_EMAIL_ADDRESS_EMPTY_PLACEHOLDER', t('[No reroute email address configured]'));
+ define('REROUTE_EMAIL_ENABLE_MESSAGE', 'reroute_email_enable_message');
+ define('REROUTE_EMAIL_ENABLE', 'reroute_email_enable');
+ 
+-// Regular expression used to split email addresses provided in form.
+-// This allows the use of any number of spaces, commas, or semicolons
+-// between email addresses.
+-define('REROUTE_EMAIL_EMAIL_SPLIT_RE', '/[\s,;]+/');
+-
++define('REROUTE_EMAIL_DEFAULT_ADDRESS', variable_get('site_mail', ini_get('sendmail_from')));
+ 
+ /**
+  * Implements hook_module_implements_alter().
+@@ -78,6 +82,28 @@ function reroute_email_menu() {
+ }
+ 
+ /**
++ * Split string of email addresses (or domains) into an array.
++ *
++ * Items may be separated by any number and combination of:
++ * spaces, commas, semicolons, or newlines.
++ */
++function reroute_email_split_string($string) {
++  return preg_split('/[\s,;\n]+/', $string, -1, PREG_SPLIT_NO_EMPTY);
++}
++
++/**
++ * Return the destination address to reroute email to.
++ *
++ * Historically, the (sole) destination address was simply the
++ * first email address in the whitelist.
++ */
++function reroute_email_destination() {
++  $whitelist = reroute_email_split_string(variable_get(REROUTE_EMAIL_WHITELIST, REROUTE_EMAIL_DEFAULT_ADDRESS));
++  $default_address = array_shift($whitelist);
++  return variable_get(REROUTE_EMAIL_TO, $default_address);
++}
++
++/**
+  * Implements hook_mail_alter().
+  *
+  * This hook is required to change the destination of outgoing emails.
+@@ -124,13 +150,26 @@ function reroute_email_mail_alter(&$message) {
+       }
+     }
+ 
+-    // Split the address string on whitespace, ignoring any empty results.
+-    $addresslist = preg_split(REROUTE_EMAIL_EMAIL_SPLIT_RE, variable_get(REROUTE_EMAIL_ADDRESS, variable_get('site_mail', ini_get('sendmail_from'))), -1, PREG_SPLIT_NO_EMPTY);
++    $destination = reroute_email_destination();
++    $destination_str = trim(implode(',', reroute_email_split_string($destination)));
++
++    // Check to see if the To address is whitelisted.
++    // (It is currently assumed that there is only a single address in the To
++    // header.)
++    $reroute_required = FALSE;
++    $address_whitelist = reroute_email_split_string(variable_get(REROUTE_EMAIL_WHITELIST, REROUTE_EMAIL_DEFAULT_ADDRESS));
++    if (!in_array($to, $address_whitelist, TRUE)) {
++      $to_domain = explode('@', $to);
++      $to_domain = array_pop($to_domain);
++      $domain_whitelist = reroute_email_split_string(variable_get(REROUTE_EMAIL_DOMAIN_WHITELIST, ''));
++      if (!in_array($to_domain, $domain_whitelist, TRUE)) {
++        $reroute_required = TRUE;
++      }
++    }
+ 
+-    if (!in_array($to, $addresslist)) {
+-      // Not on the list, so reroute to the first address in the list.
++    if ($reroute_required) {
+       $message['headers']['X-Rerouted-Original-To'] = $to;
+-      $message['to'] = !empty($addresslist[0]) ? $addresslist[0] : REROUTE_EMAIL_ADDRESS_EMPTY_PLACEHOLDER;
++      $message['to'] = !empty($destination_str) ? $destination_str : REROUTE_EMAIL_ADDRESS_EMPTY_PLACEHOLDER;
+ 
+       if (variable_get(REROUTE_EMAIL_ENABLE_MESSAGE, 1)) {
+         // Format a message to show at the top.
+@@ -152,8 +191,8 @@ function reroute_email_mail_alter(&$message) {
+         }
+       }
+     }
+-    // Abort sending of the email only if the address is an empty string.
+-    if (variable_get(REROUTE_EMAIL_ADDRESS, NULL) === '') {
++    // Abort sending of the email only if the destination is empty
++    if (empty($destination)) {
+       $message['send'] = FALSE;
+       // Record a variable dump of the email in the recent log entries.
+       watchdog('reroute_email', 'Aborted email sending for <em>@message_id</em>. <br/>Detailed email data: Array $message <pre>@message</pre>', array(
+diff --git a/reroute_email.test b/reroute_email.test
+index 8c5bcaf..56c2705 100644
+--- a/reroute_email.test
++++ b/reroute_email.test
+@@ -75,7 +75,7 @@ class RerouteEmailTestCase extends DrupalWebTestCase {
+     }
+     // Configure to Reroute Email settings form.
+     $post = array(
+-      'reroute_email_address' => $reroute_destination,
++      'reroute_email_to' => $reroute_destination,
+       'reroute_email_enable' => $reroute_email_enable,
+       'reroute_email_enable_message' => $reroute_email_enable_message,
+     );
+@@ -167,7 +167,7 @@ class RerouteEmailContactTestCase extends RerouteEmailTestCase {
+     // Now try sending to one of the additional email addresses that should
+     // not be rerouted. Configure two email addresses in reroute form.
+     // Body injection is still turned on.
+-    $this->configureRerouteEmail("{$this->rerouteDestination}, $additional_destination");
++    $this->configureRerouteEmail("$additional_destination");
+ 
+     // Configure the contact settings to point to the additional recipient.
+     $this->drupalPost('admin/structure/contact/edit/1', array('recipients' => $additional_destination), t('Save'));
+diff --git a/reroute_email.variable.inc b/reroute_email.variable.inc
+index f23d70a..02d3534 100644
+--- a/reroute_email.variable.inc
++++ b/reroute_email.variable.inc
+@@ -18,10 +18,27 @@ function reroute_email_variable_info() {
+     'group' => 'reroute_email',
+   );
+ 
+-  $variable[REROUTE_EMAIL_ADDRESS] = array(
+-    'title' => t('Email addresses'),
+-    'description' => t('Provide a space, comma, or semicolon-delimited list of email addresses to pass through. Every destination email address which is not on this list will be rerouted to the first address on the list.'),
+-    'default' => variable_get('site_mail', ini_get('sendmail_from')),
++  $variable[REROUTE_EMAIL_TO] = array(
++    'title' => t('Destination email addresses'),
++    'description' => t('Provide a space, comma, semicolon, or newline-delimited list of email addresses to reroute email messages to.'),
++    'type' => 'text',
++    'default' => REROUTE_EMAIL_DEFAULT_ADDRESS,
++    'group' => 'reroute_email',
++  );
++
++  $variable[REROUTE_EMAIL_WHITELIST] = array(
++    'title' => t('Email address whitelist'),
++    'description' => t('Provide a space, comma, semicolon, or newline-delimited list of email addresses to permit delivery to.'),
++    'type' => 'text',
++    'default' => REROUTE_EMAIL_DEFAULT_ADDRESS,
++    'group' => 'reroute_email',
++  );
++
++  $variable[REROUTE_EMAIL_DOMAIN_WHITELIST] = array(
++    'title' => t('Domain whitelist'),
++    'description' => t('Provide a space, comma, or semicolon-delimited list of domains to permit delivery to.'),
++    'type' => 'string',
++    'default' => '',
+     'group' => 'reroute_email',
+   );
+ 

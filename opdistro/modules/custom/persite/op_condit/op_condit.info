@@ -1,0 +1,10 @@
+name = op_condit
+core = 7.x
+package = Features
+dependencies[] = conditional_fields
+dependencies[] = og
+dependencies[] = opg_core
+dependencies[] = rules
+features[conditional_fields][] = user:user
+features[features_api][] = api:2
+features[rules_config][] = opg_new_adminpost_notification

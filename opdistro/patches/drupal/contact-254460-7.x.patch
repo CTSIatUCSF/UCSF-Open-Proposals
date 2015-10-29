@@ -1,0 +1,22 @@
+diff --git a/modules/contact/contact.module b/modules/contact/contact.module
+index 9a48f23..fc24374 100644
+--- a/modules/contact/contact.module
++++ b/modules/contact/contact.module
+@@ -45,6 +45,9 @@ function contact_permission() {
+     'access site-wide contact form' => array(
+       'title' => t('Use the site-wide contact form'),
+     ),
++    'administer own contact form' => array(
++      'title' => t('Administer own personal contact form'),
++    ),
+     'access user contact forms' => array(
+       'title' => t("Use users' personal contact forms"),
+     ),
+@@ -219,6 +222,7 @@ function contact_form_user_profile_form_alter(&$form, &$form_state) {
+       '#type' => 'fieldset',
+       '#title' => t('Contact settings'),
+       '#weight' => 5,
++      '#access' => user_access('administer own contact form'),
+       '#collapsible' => TRUE,
+     );
+     $form['contact']['contact'] = array(

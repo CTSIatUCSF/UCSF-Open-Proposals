@@ -1,0 +1,19 @@
+diff --git a/entityreference.install b/entityreference.install
+index 4e248ef..8932776 100644
+--- a/entityreference.install
++++ b/entityreference.install
+@@ -41,6 +41,7 @@ function entityreference_field_schema($field) {
+     }
+ 
+     // Invoke the behaviors to allow them to change the schema.
++    module_load_include('module', 'entityreference');
+     foreach (entityreference_get_behavior_handlers($field) as $handler) {
+       $handler->schema_alter($schema, $field);
+     }
+@@ -161,4 +162,4 @@ function entityreference_update_7002() {
+       'not null' => TRUE,
+     ));
+   }
+-}
+\ No newline at end of file
++}

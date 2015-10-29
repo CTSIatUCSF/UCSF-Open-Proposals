@@ -1,0 +1,631 @@
+/* Banner */
+.site-logo a span, .site-logo a span:hover { color: #5DAEDA; }
+h3#optopright { margin: -3px 0 3px; }
+h3#optopright a, h3#optopright a:visited, h3#optopright a:hover {
+    color: #4D4D4D;
+    font-size: 1.1em;
+}
+.site-logo a:hover, .site-logo a:hover span {
+  text-decoration: none; color: #052049;
+}
+/* EdInnovations branding */
+h1#edinno {
+    background: transparent url("/sites/open-proposals.ucsf.edu/modules/proposals/edin/edin.png") repeat-y scroll 0 0;
+    margin: 17px 0 17px 20px;
+    padding: 0;
+}
+h1#edinno a {
+    display: block;
+    font-size: 0.7em;
+    line-height: 1.1em;
+    padding: 1px 0 1px 14px;
+    white-space: nowrap;
+}
+ 
+/* Search form width for awkward transitions */
+/* forum search */
+@media only screen and (min-width:768px) and (max-width:959px) {
+  .region-main-menu #search-form,
+  .region-main-menu #search-form input[type="text"] {
+     width: 175px; margin-right: 8px; font-size: 90%; padding-left: 3px; }
+}
+@media only screen and (max-width:300px) {
+  .region-main-menu #search-form,
+  .region-main-menu #search-form input[type="text"] {
+     width: 171px; margin-right: 2px; font-size: 90%; padding-left: 3px; }
+}
+/* global search */
+@media only screen and (max-width:299px) {
+  #block-search-form { margin-right: -10px; }
+  #block-search-form input[type="text"] {
+     width: 168px; font-size: 80%; padding-left: 2px; }
+}
+
+/* Process (site & UCMerced home pages) */
+#process-wrapper { padding: 0.8em 0 1.5em; width: 100%; }
+.process { clear: left; }
+.process p {
+  color: #FFF;
+  text-align: center;
+  margin: 0 1em;
+  background-color: #F7A565;
+  font-weight: 800;
+}
+.process img {
+  width: 100%;
+  height: 30px;
+  vertical-align: bottom;
+  margin: 0 -1px; /* fix safari glitch */
+}
+
+/* Arrow box on home page */
+.arrow_box {
+  position: relative;
+  border: 4px solid #A1D0EA;
+  padding: .4em 1.5em 0; 
+}
+.arrow_box:after, .arrow_box:before {
+  right: 100%;
+  top: 50%;
+  border: solid transparent;
+  content: " ";
+  height: 0;
+  width: 0;
+  position: absolute;
+  pointer-events: none; 
+}
+.arrow_box:after {
+  border-right-color: #ffffff;
+  border-width: 30px;
+  margin-top: -30px; 
+}
+.arrow_box:before { 
+  border-right-color: #A1D0EA;
+  border-width: 36px;
+  margin-top: -36px; 
+}
+
+/* Opps list */
+aside.sidebar .block-content ul.opps li {
+  padding-left: 31px;
+}
+#content article ul.opps li {
+  list-style-type: none;
+  padding: 0 0 5px 12px;
+}
+#content article ul.opps li .icon,
+aside.sidebar .block-content ul.opps li .icon {
+  display: inline-block;
+  width: 31px;
+  margin-left: -31px;
+  text-align: center;
+}
+
+.opportunity { display: table; font-size: 0.9em; min-height: 3em; }
+.opportunity span { display: inline-block; vertical-align: top; }
+.opportunity .access { display: table-cell; width: 3.5em; }
+.opp2, .sponsor { width: 18em; padding-right: 15px; }
+.opsscontainer .opp2, .opsscontainer .sponsor { width: 28em; }
+.opportunity .ltdacc:before,
+.opportunity .openacc:before {
+  content: "UCSF+";
+  color: #FFF;
+  background-color: #178CCB;
+  font-size: 0.7em;
+  padding: 0 4px;
+  border-radius: 3px;
+  vertical-align: 1px;
+}  
+.opportunity .openacc:before {
+  content: "PUBLIC";
+  background-color: #18A3AC;
+  padding: 0 2px;
+}
+
+/* Sidebar */
+.addproposal {
+  font-weight: bold;
+  margin: 8px 12px 0;    /* left margin 40 better? */
+  letter-spacing: 1px;
+}
+
+/* Views */
+.view h2.article-title {
+  border-top: 3px dotted #DEDFDF;
+  margin-top: 20px;
+}
+#proposalCount h2, #proposalCount .item-list {  /* for pre-group forums */
+    float: left;
+}
+.view-opg-core #proposalCount {
+  float: left;
+  color: #989898;
+  font-size: 0.8em;
+  padding-top: 0.1em;
+}
+.view-opg-core .view-header .item-list {
+  float: left;
+}
+.view-opg-core .view-header .item-list .pager {
+  margin: 0;
+}
+.view-content {
+  clear: both;
+}
+ul.summary-new {
+  padding-left: 0;
+  width: 16em;
+  display: inline-block;
+}
+ul.summary-new li,
+ul.summary li {
+  list-style-type: none;
+}
+ul.summary-new li span {
+    display: block;
+    float: right;
+}
+ul.summary li span { /* for archived forums */
+    display: inline-block;
+    width: 16em;
+}
+th.views-field-comment-count,
+th.views-field-value,
+th.views-field-version-count-1 {
+  font-size: 80%;
+  width: 3.3em;
+}
+th.views-field-value,
+th.views-field-version-count-1 {
+  width: 2.8em;
+}
+/*
+.myproposals {
+    clear: both;
+}
+.myproposals .views-field-title { float: left; }
+.myproposals .views-field-title:after {
+    content: " ";   
+    width: 3em;
+    display: inline-block;
+    margin-top: -1.45em;
+}
+*/
+.myproposals {
+    display: table;
+    width: 100%;
+}
+.myproposals .views-field-title { 
+    display: table-cell;
+}
+.myproposals .views-field-edit-node {
+    display: table-cell;
+    text-align: right;
+}
+.edit-link a {
+    background-color: #DEDFDF;
+    border-radius: 4px;
+    padding: 1px 10px 1px;
+    text-transform: uppercase;
+    font-size: 80%;
+}
+.edit-link a:hover {
+    background-color: #989898;
+    color: #FFF;
+}
+/* bulk operation view & group admin - also sharing nogroup rules below */
+.view-og-members-admin .form-type-select,
+.view-opg-core-reports .form-type-select {
+    margin-right: 1em;
+}
+.view-og-members-admin .form-item-uid input {
+  width: 400px;
+  margin-left: 10px; 
+}
+#edit-uid-wrapper { clear: left; }
+
+/* Nodes */
+article.node { margin: 0; }
+.proposal-content {
+  font-size: 90%;
+}
+#content-wrapper .proposal-content ul li,
+#content-wrapper .proposal-content ol li,
+.proposal-content p {
+  font-size: 100%;
+}
+.submitted {
+  color: #989898;
+  font-weight: normal;
+  margin-bottom: 0;
+  padding: 0;
+  display: block;
+}
+.comment .submitted {
+  font-size: 90%;
+  padding: 3px 3em 0 0;
+}
+.primary-author,
+.field-name-field-opg-status .field-label,
+.field-name-field-opg-status .field-item,
+.field-name-og-vocabulary .field-label,
+.field-name-og-vocabulary .field-item {
+  font-size: 90%;
+}
+.proposal .field-type-taxonomy-term-reference  {
+  clear: left; 
+}
+.proposal .field-type-taxonomy-term-reference:after  {
+  clear: left; 
+  display: block;
+  content: " ";
+}
+.proposal .field-type-taxonomy-term-reference .field-label,
+.proposal .field-type-taxonomy-term-reference .field-item,
+.terms {
+  font-size: 90%;
+  display: block;
+  float: left;
+}
+.proposal .field-name-body {
+    margin-top: 0.8em;
+}
+.field-type-image img {
+    border: none;
+    margin-bottom: 0;
+}
+.view-og-members-admin fieldset,
+.view-opg-core-reports fieldset,
+.proposal .nogroup {
+  border: none; 
+  margin-bottom: 0.5em;
+}
+.proposal .nogroup legend {
+  display: none;
+}
+.view-og-members-admin fieldset,
+.view-opg-core-reports fieldset,
+.proposal .nogroup .field-label {
+  margin-left: -1em;
+}
+.proposal .nogroup .field-label {
+  padding-top: 0;
+}
+.proposal .nogroup .field {
+  padding-top: 0.5em;
+}
+/* Node links */
+.links.node-links ul li {
+    line-height: 2.3em;  /* gives some space if list wraps */
+}
+.links li a {
+  border-radius: 4px 0 0 4px;
+  font-size: 13px !important;   
+  padding: 3px 8px;
+}
+.links.node-links ul li.count-comments,
+.links.node-links ul li.count-follows,
+.rate-info {
+  border: 1px solid #DEDFDF;
+  border-radius: 4px;
+  margin-right: 4px;
+  padding: 2px 6px;
+  font-size: 13px !important;   
+  color: #506480;
+  background-color: #FFF;
+  position: relative;
+  z-index: 2;
+}
+.links li.comment-add,
+.links li.subscription-node,
+.rate-button {
+  margin-right: -8px;
+  position: relative;
+  z-index: 3;
+}
+.rate-button.vh-vote-closed { 
+  margin-right: 0;
+}
+.rate-widget, .rate-info { display: inline; }
+.links.node-links ul li.count-comments:before,
+.links.node-links ul li.count-follows:before,
+.rate-info:before {
+    color: #989898;
+    content: '\e808';
+    display: inline-block;
+    font-family: "entypo";
+    vertical-align: top;
+    padding: 0 4px 0 2px;
+} 
+.links.node-links ul li.count-comments:before {
+    content: '\e80c';
+}
+.links.node-links ul li.count-follows:before {
+    content: '\e821';
+}
+.links li.comment-comments a {
+  background-color: #FFF;
+  border-right: 1px solid #DEDFDF;
+}
+#block-views-opg-core-adminpost-block .links.node-links ul li.count-comments,
+#block-views-opg-core-adminpost-block .links.node-links ul li.count-follows,
+#block-views-opg-core-adminpost-block .rate-info {
+  border: 1px solid #FFF;
+}
+#block-views-opg-core-adminpost-block .links li .bt-content a,
+.links li .bt-content a {
+  padding: 0; margin: 0; border-radius: 0;
+  background-color: transparent;
+  font-size: 15px !important;
+  border: none;
+}
+.links li .bt-content a:hover {
+  color: #178CCB;
+}
+.comment .links li { margin-right: 4px; }
+.links li.comment-comments a:before {
+  font-family: "entypo";
+  content: "\E80D";
+  font-size: 110%;
+  margin: 0 5px 0 0;
+}
+.links li.comment-edit a,
+.links li.comment-reply a {
+    border-radius: 4px;
+}
+.rate-widget-thumbs_up {    /* for old vote widget */
+  margin: .95em 3px 0 0;
+  float: left;
+}
+.rate-thumbs-up-btn-up {  
+  background: none;
+  text-indent: 0;
+  border-radius: 4px 0 0 4px;
+  font-size: 13px !important;   
+  padding: 3px 8px;
+  background-color: #DEDFDF;
+  height: 19px;
+  width: auto;
+}
+.rate-widget-thumbs_up .rate-info:before {
+  padding: 4px 4px 0 6px;
+}
+.rate-thumbs-up-btn-up.vh-vote-closed {  
+  display: none;
+}
+
+/* Read More */
+.links li.node-readmore {
+  margin-right: 4px;
+}
+#block-views-opg-core-adminpost-block li.node-readmore a,
+#block-views-opg-core-adminpost-block li.node-readmore a:hover,
+.links li.node-readmore a {
+    background-color: #5DAEDA;
+    color: #FFF;
+    border-radius: 4px;
+}
+
+/* Recent View with Comments */
+.view-opg-core .comment {
+  margin: 1em 0 0 2em;
+}
+.view-opg-core .comment p {
+  font-size: 90%;
+}
+.links li.comment-full a {
+    border-radius: 4px;
+}
+.color-palette-dark-rust #block-views-opg-core-adminpost-block .comment.odd,
+.color-palette-dark-rust #block-views-opg-core-adminpost-block .comment.even {
+  background: none repeat scroll 0 0 #FFF;
+  margin-right: 6px;
+}
+
+/* STILL NEED THIS? */
+.rate-thumbs-up-btn-up.vh-not-voted:before {
+    color: #D95E16;
+}
+.rate-thumbs-up-btn-up:hover:before,
+.rate-thumbs-up-btn-up:hover {
+    color: #FFF;
+    cursor: pointer;
+    background-color: #999;
+}
+.rate-thumbs-up-btn-up:hover {
+  color: #FFF !important;
+  text-decoration: underline;
+}
+.rate-thumbs-up-btn-up.vh-voted,
+.rate-thumbs-up-btn-up.vh-not-voted {
+  background-image: none;
+}
+.rate-thumbs-up-btn-up.vh-vote-closed {
+    padding: 0;
+    margin-left: 4px;
+}
+.rate-thumbs-up-btn-up.vh-vote-closed:before {
+    color: #FFF;
+    content: '\2022';    /* does not show but needed for alignment  */
+    margin: 2px -20px 0 0;
+}
+.vh-vote-closed { font-size: 1px; } /* make like link invisible while maintainig alignment */
+article .field-name-body:after {  /* fixes widget alignment glitch in Chrome */
+    content: " ";
+    display: block;
+    height: 2px;
+    overflow: hidden;
+    visibility: hidden;
+}
+
+/* OP colors */
+.color-palette-dark-rust .sidebar .block h2,
+.color-palette-dark-rust nav#main-menu ul li li a {
+  background: #178CCB;
+  background-image: none;
+  color: #ffffff;
+}
+/* NEED THIS?
+.color-palette-dark-rust nav#main-menu ul li li a {
+  background: #3A5773;}
+.color-palette-dark-rust nav#main-menu ul li li a:hover {
+  background: #5582AA;}
+*/
+#menu-wrapper {
+  background: #178CCB;
+  box-shadow: 0 0 0;
+}
+
+#main-menu a:hover, #main-menu li > a.active {
+  background: #5DAEDA;
+}
+
+#colophon {
+  background: #178CCB;
+  margin-bottom: 14px;
+  padding-top: 5px;
+}
+
+/* Subscriptions tab */
+.page-user-subscriptions ul.secondary { padding-bottom: 2em; }
+
+/* HP Opps list */
+.opplist { clear: left; }
+.opplist .graphic {
+  background: #FFF url(../images/open-proposals.png) no-repeat 0 0;
+  height: 80px;
+}
+.opplist .opensub {
+  background-position: 0 -90px;
+  height: 110px;
+}
+.opplist .openimp {
+  background-position: 0 -200px;
+  height: 130px;
+}
+.opplist ul.opps {
+  display: inline-block; 
+  margin: 0;
+}
+
+/* Field collections */
+.field-collection-view,
+.field-collection-container {
+    border-bottom: none;
+    margin: 0;
+    padding: 0;
+}
+.field-collection-container .field-label {
+    margin-bottom: 0.5em;
+    font-weight: normal;
+}
+#content article .field-collection-container ul.icon {
+    margin-bottom: 0;
+}
+
+/* Groups */
+ul.tabs.primary li a {
+  padding: 0 4px;
+}
+.node-type-opg-group article.node { margin: 0; }
+#block-views-opg-core-adminpost-block {
+  background-color: #E7F3F9;
+  padding-left: 0.8em;
+}
+#block-views-opg-core-adminpost-block h2,
+#block-views-opg-core-adminpost-block h2.article-title {
+  margin-top: 0;
+}
+#block-views-opg-core-adminpost-block .view h2.article-title {
+  border-top: 3px dotted #FFF;
+  margin-left: -0.8em;
+  padding-left: 0.8em;
+}
+.seemore {
+  text-align: right;
+  font-size: 80%; 
+  padding-right: 0.8em;
+}
+@media only screen and (min-width:540px) {
+  .seemore { margin-top: -2em; }
+}
+.seemore a:after {
+    content: " »";
+    font-size: 150%;
+}
+.field-name-og-vocabulary h3 {
+  font-weight: bold;
+  color: #4D4D4D;
+  float: left;
+  padding-right: 3px;
+  margin-bottom: 0;
+  font-size: 100%;
+}
+#content article .field-name-og-vocabulary ul {
+  display: block;
+  margin-left: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+.field-name-og-vocabulary h3:after {
+  content: ": ";
+}
+.field-type-taxonomy-term-reference .field-item {
+  display: inline-block;
+  padding-right: 3px;
+}
+#block-opg-core-opg-core-taxo-block ul.inline {
+  display: block;
+  line-height: 1.9em;
+}
+#block-opg-core-opg-core-taxo-block .inline li,
+.field-name-og-vocabulary li {
+  list-style-type: none;
+  display: inline;
+}
+.field-type-taxonomy-term-reference .field-item:before,
+#block-opg-core-opg-core-taxo-block .inline li:before,
+.field-name-og-vocabulary li:before {
+  content: "|";
+  padding-right: 3px;
+  color: #DEDFDF;
+}
+.field-type-taxonomy-term-reference .field-item:first-child:before,
+#block-opg-core-opg-core-taxo-block .inline li:first-child:before,
+.field-name-og-vocabulary li.first:before {
+  content: "";
+}
+#block-opg-core-opg-core-taxo-block ul.inline li:first-child {
+  margin-left: -2px;
+}
+.node-opg-group h3.pointer {
+  margin: -6px 0 1em 1.3em;
+}
+.mgrphoto {
+  float: left;
+  min-height: 7em;
+}
+.mgrphoto img { 
+  width: 80px;
+  margin-right: 30px;
+}
+.inline {  /* tweaking the list to the right of the mgrphoto */
+  display: inline;
+}
+.afterinline {
+  padding-top: 8px;
+}
+.page-node-edit .explanation, .page-node-add .explanation {
+  margin: 1em 0 -1em;
+}
+.item-list ul {
+  padding: 0 0 0.8em 20px;
+}
+#inprogress {
+  background: #FFF url(../images/roller.gif) no-repeat 0 0;
+  padding: 5px 0 10px 40px;
+}
+.takeaways {
+  background-color: #E7F3F9; padding: 0 0.5em 0.1em;
+}
+

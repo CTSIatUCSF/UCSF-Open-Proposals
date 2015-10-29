@@ -1,0 +1,13 @@
+diff --git a/field_collection.module b/field_collection.module
+index a868552..db7b859 100644
+--- a/field_collection.module
++++ b/field_collection.module
+@@ -588,7 +588,7 @@ function field_collection_item_is_empty(FieldCollectionItemEntity $item) {
+   $is_empty = TRUE;
+ 
+   // Check whether all fields are booleans.
+-  $all_boolean = $instances && !(bool) array_filter('_field_collection_field_is_not_boolean');
++  $all_boolean = $instances && !(bool) array_filter($instances, '_field_collection_field_is_not_boolean');
+ 
+   foreach ($instances as $instance) {
+     $field_name = $instance['field_name'];

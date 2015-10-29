@@ -1,0 +1,61 @@
+<?php
+
+/**
+ * Implement hook_install()
+ */
+function op_global_install() {
+
+  // Set up custom menu items in user_menu 
+  $custom = array();
+
+  $custom['ctsi_saml_login'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'ctsi_saml_login',
+    'link_title' => 'UCSF Login',
+    'weight' => '-50',
+  );
+  $custom['user/login'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'user/login',
+    'link_title' => 'non-UCSF Login',
+    'weight' => '-49',
+  );
+  $custom['contact'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'contact',
+    'link_title' => 'Contact',
+    'weight' => '-46',
+  );
+  $custom['user'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'user',
+    'link_title' => 'User account',
+    'weight' => '-10',
+  );
+  $custom['groups'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'groups',
+    'link_title' => 'Groups',
+    'weight' => '9',
+  );
+  $custom['user/logout'] = array(
+    'menu_name' => 'user-menu',
+    'link_path' => 'user/logout',
+    'link_title' => 'Log out',
+    'weight' => '10',
+  );
+
+  $existing = menu_load_links('user-menu');
+  foreach ($existing as $item) {
+    if (isset($custom[$item['link_path']])) {
+      unset($custom[$item['link_path']]);
+    }
+  }
+  foreach ($custom as $path => $item) {
+    menu_link_save($item);
+    drupal_set_message("Saved menu item '{$item['link_title']}' ({$path})");
+  }
+
+  // Disable default Drupal blocks
+  db_query("update block set status = 0, region = '' where module = 'block' and delta in (4,5,6) and status = 1");
+}

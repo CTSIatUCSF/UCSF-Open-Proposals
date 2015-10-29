@@ -1,0 +1,13 @@
+diff --git a/mail_edit_features.module b/mail_edit_features.module
+index cf795b6..8759e00 100644
+--- a/mail_edit_features.module
++++ b/mail_edit_features.module
+@@ -11,7 +11,7 @@ function mail_edit_features_features_api() {
+   return array(
+     'mail_edit_features' => array(
+       'name' => t('Mail edit templates'),
+-      'features_source' => TRUE,
++      'feature_source' => TRUE,
+       'default_hook' => 'default_mail_edit_features',
+       'default_file' => FEATURES_DEFAULTS_INCLUDED,
+       'file' => drupal_get_path('module', 'mail_edit_features') . '/inc/mail_edit_features.features.inc',

@@ -1,0 +1,45 @@
+diff --git a/mail_logger.pages.inc b/mail_logger.pages.inc
+index 9930844..6076ca7 100644
+--- a/mail_logger.pages.inc
++++ b/mail_logger.pages.inc
+@@ -134,10 +134,16 @@ function mail_logger_form_overview() {
+     ->execute()
+     ->fetchField();
+ 
+-  $timezone = new DateTimeZone(date_default_timezone_get());
+-  $default_from_date = $first_mail ? DateTime::createFromFormat('U', $first_mail) : DateTime::createFromFormat('U', strtotime('-1 month'));
+-  $default_from_date->setTimezone($timezone);
+-  $default_from_date = array('year' => $default_from_date->format('Y'), 'month' => $default_from_date->format('n'), 'day' => $default_from_date->format('j'));
++  // DateTime::createFromFormat only exists in PHP 5.3+
++  if (method_exists('DateTime', 'createFromFormat')) {
++    $timezone = new DateTimeZone(date_default_timezone_get());
++    $default_from_date = $first_mail ? DateTime::createFromFormat('U', $first_mail) : DateTime::createFromFormat('U', strtotime('-1 month'));
++    $default_from_date->setTimezone($timezone);
++    $default_from_date = array('year' => $default_from_date->format('Y'), 'month' => $default_from_date->format('n'), 'day' => $default_from_date->format('j'));
++  }
++  else {
++    $default_from_date = array('year' => date('Y', $first_mail), 'month' => date('n', $first_mail), 'day' => date('j', $first_mail));
++  }
+ 
+   $is_filtering = $_SESSION['mail_logger_overview_filter'] != 'all' || !empty($_SESSION['mail_logger_overview_from_date']) || !empty($_SESSION['mail_logger_overview_to_date']) || !empty($_SESSION['mail_logger_overview_search_field']) || !empty($_SESSION['mail_logger_overview_search_value']);
+ 
+@@ -153,9 +159,16 @@ function mail_logger_form_overview() {
+     '#default_value' => (!empty($_SESSION['mail_logger_overview_from_date'])) ? $_SESSION['mail_logger_overview_from_date'] : $default_from_date,
+   );
+ 
+-  $default_to_date = DateTime::createFromFormat('U', time() + 86400);
+-  $default_to_date->setTimezone($timezone);
+-  $default_to_date = array('year' => $default_to_date->format('Y'), 'month' => $default_to_date->format('n'), 'day' => $default_to_date->format('j'));
++  // DateTime::createFromFormat only exists in PHP 5.3+
++  if (method_exists('DateTime', 'createFromFormat')) {
++    $default_to_date = DateTime::createFromFormat('U', time() + 86400);
++    $default_to_date->setTimezone($timezone);
++    $default_to_date = array('year' => $default_to_date->format('Y'), 'month' => $default_to_date->format('n'), 'day' => $default_to_date->format('j'));
++  }
++  else {
++    $default_to_date_ts = time() + 86400;
++    $default_to_date = array('year' => date('Y', $default_to_date_ts), 'month' => date('n', $default_to_date_ts), 'day' => date('j', $default_to_date_ts));
++  }
+ 
+   $form['filter_logs']['to_date'] = array(
+     '#type' => 'date',

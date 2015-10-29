@@ -1,0 +1,40 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for the ctsi_profiles module.
+ *
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ctsi_profiles_schema() {
+  $schema['ctsi_profiles'] = array(
+    'description' => 'hacky place to store user Profiles info',
+    'fields' => array(
+      'username' => array(
+        'description' => 'user name from users table',
+        'type' => 'varchar',
+        'length' => 60,
+        'not null' => TRUE,
+      ),
+      'personid' => array(
+        'description' => 'user name converted to UCSF Profiles ID value',
+        'type' => 'char',
+        'length' => '7',
+        'not null' => TRUE,
+      ),
+      'profiles_url' => array(
+        'description' => 'URL of page on UCSF Profiles site for this user, if any',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'primary key' => array('username'),
+  );
+  return $schema;
+}
+

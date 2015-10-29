@@ -1,0 +1,13 @@
+diff --git a/includes/errors.inc b/includes/errors.inc
+index a9b7b5b..3dc2245 100644
+--- a/includes/errors.inc
++++ b/includes/errors.inc
+@@ -153,7 +153,7 @@ function error_displayable($error = NULL) {
+   $updating = (defined('MAINTENANCE_MODE') && MAINTENANCE_MODE == 'update');
+   $all_errors_displayed = ($error_level == ERROR_REPORTING_DISPLAY_ALL);
+   $error_needs_display = ($error_level == ERROR_REPORTING_DISPLAY_SOME &&
+-    isset($error) && $error['%type'] != 'Notice' && $error['%type'] != 'Strict warning');
++    isset($error) && $error['%type'] != 'Notice' && $error['%type'] != 'User notice' && $error['%type'] != 'Strict warning');
+ 
+   return ($updating || $all_errors_displayed || $error_needs_display);
+ }

@@ -1,0 +1,14 @@
+diff --git a/includes/files.inc b/includes/files.inc
+index 8931189..a33fe4d 100644
+--- a/includes/files.inc
++++ b/includes/files.inc
+@@ -430,7 +430,8 @@ class backup_file {
+     // In some circumstances, web-servers will double compress gzipped files.
+     // This may help aleviate that issue by disabling mod-deflate.
+     if ($this->mimetype() == 'application/x-gzip') {
+-      $headers[] = array('key' => 'Content-Encoding', 'value' => 'gzip');
++      // except it causes the downloaded file to be decompressed
++      // $headers[] = array('key' => 'Content-Encoding', 'value' => 'gzip');
+     }
+     if ($size = $this->info('filesize')) {
+       $headers[] = array('key' => 'Content-Length', 'value' => $size);

@@ -1,0 +1,8 @@
+<?php
+/**
+ * @file
+ * Code for the Open Proposals String Overrides feature.
+ */
+
+include_once 'op_strings.features.inc';
+

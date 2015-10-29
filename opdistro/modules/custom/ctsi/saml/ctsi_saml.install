@@ -1,0 +1,119 @@
+<?php
+/**
+ * @file
+ * Install, update and uninstall functions for the ctsi_saml module.
+ *
+ */
+
+
+/**
+ * Implements hook_schema().
+ */
+function ctsi_saml_schema() {
+  $schema = array();
+
+  $schema['ctsi_saml_log'] = array(
+    'description' => 'CTSI permanent storage of SAML login events from watchdog',
+    'fields' => array(
+      'wid' => array(
+        'description' => 'Primary Key: Unique watchdog event ID.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'uid' => array(
+        'description' => 'The {users}.uid of the user who triggered the event.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'type' => array(
+        'description' => 'Type of log message, for example "user" or "page not found."',
+        'type' => 'varchar',
+        'length' => '16',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'message' => array(
+        'description' => 'Text of log message to be passed into the t() function.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'severity' => array(
+        'description' => 'The severity level of the event; ranges from 0 (Emergency) to 7 (Debug)',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'size' => 'tiny',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'link' => array(
+        'description' => 'Link to view the result of the event.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'location' => array(
+        'description' => 'URL of the origin of the event.',
+        'type' => 'text',
+        'not null' => TRUE,
+      ),
+      'referer' => array(
+        'description' => 'URL of referring page.',
+        'type' => 'text',
+        'not null' => FALSE,
+      ),
+      'hostname' => array(
+        'description' => 'Hostname of the user who triggered the event.',
+        'type' => 'varchar',
+        'length' => '128',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'timestamp' => array(
+        'description' => 'Unix timestamp of when event occurred.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'variables' => array(
+        'description' => 'Serialized array of variables that match the message string and that is passed into the t() function.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'name' => array(
+        'description' => 'Unique user name.',
+        'type' => 'varchar',
+        'length' => '60',
+        'not null' => FALSE,
+        'default' => '',
+      ),
+      'mail' => array(
+        'description' => 'User\'s email address.',
+        'type' => 'varchar',
+        'length' => '64',
+        'not null' => FALSE,
+        'default' => '',
+      ),
+      'realname' => array(
+        'description' => 'Saved computed RealName.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'destination' => array(
+        'description' => 'Ultimate destination after login, if specified.',
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('wid'),
+  );
+
+  return $schema;
+}
+

@@ -1,0 +1,7 @@
+name = "CTSI simpleSAMLphp Customizations"
+version = "7.x-1.x-dev"
+project = "ctsi_saml"
+package = "CTSI"
+core = 7.x
+dependencies[] = "simplesamlphp_auth"
+

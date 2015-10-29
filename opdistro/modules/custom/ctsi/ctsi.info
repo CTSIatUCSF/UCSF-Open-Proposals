@@ -1,0 +1,9 @@
+name = CTSI
+description = CTSI Virtual Home UI changes and extended functionality.
+
+version = 7.x-1.x-dev
+project = ctsi
+package = CTSI
+
+core = 7.x
+

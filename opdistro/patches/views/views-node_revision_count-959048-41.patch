@@ -1,0 +1,141 @@
+diff --git a/modules/node.views.inc b/modules/node.views.inc
+index 71a1023..84a41a0 100644
+--- a/modules/node.views.inc
++++ b/modules/node.views.inc
+@@ -406,6 +406,23 @@ function node_views_data() {
+     ),
+   );
+ 
++  $data['node']['version_count'] = array(
++    'title' => t('Version Count'),
++    'help' => t('The total count of versions/revisions of a certain node.'),
++    'field' => array(
++      'handler' => 'views_handler_field_node_version_count',
++      'field' => 'nid',
++      'click sortable' => TRUE,
++    ),
++    'filter' => array(
++      'handler' => 'views_handler_filter_node_version_count',
++      'allow empty' => FALSE,
++    ),
++    'sort' => array(
++      'handler' => 'views_handler_sort_node_version_count',
++    ),
++  );
++
+   // ----------------------------------------------------------------------
+   // Content revision table
+ 
+diff --git a/modules/node/views_handler_field_node_version_count.inc b/modules/node/views_handler_field_node_version_count.inc
+new file mode 100644
+index 0000000..9eff7a7
+--- /dev/null
++++ b/modules/node/views_handler_field_node_version_count.inc
+@@ -0,0 +1,21 @@
++<?php
++/**
++ * @file
++ * Definition of views_handler_field_node_version_count.
++ */
++
++/**
++ * A handler that loads the total count of versions/revisions of a certain node.
++ *
++ * @ingroup views_field_handlers
++ */
++class views_handler_field_node_version_count extends views_handler_field_numeric {
++  function query() {
++    $this->ensure_my_table();
++    // Add the field.
++    $params = $this->options['group_type'] != 'group' ? array('function' => $this->options['group_type']) : array();
++    $this->field_alias = $this->query->add_field(NULL, "(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {$this->table_alias}.nid)", 'node_version_count', $params);
++
++    $this->add_additional_fields();
++  }
++}
+diff --git a/modules/node/views_handler_filter_node_version_count.inc b/modules/node/views_handler_filter_node_version_count.inc
+new file mode 100644
+index 0000000..c39f1d9
+--- /dev/null
++++ b/modules/node/views_handler_filter_node_version_count.inc
+@@ -0,0 +1,36 @@
++<?php
++
++/**
++ * Filter to handle dates stored as a timestamp.
++ *
++ * @ingroup views_filter_handlers
++ */
++class views_handler_filter_node_version_count extends views_handler_filter_numeric {
++  function op_between($field) {
++    if ($this->operator == 'between') {
++      $this->query->add_where_expression($this->options['group'], '(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid) BETWEEN :min AND :max', array(':min' => $this->value['min'], ':max' => $this->value['max']));
++    }
++    else {
++      $this->query->add_where_expression($this->options['group'], '((SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid) <= :min OR (SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid) >= :max)', array(':min' => $this->value['min'], ':max' => $this->value['max']));
++    }
++  }
++
++  function op_simple($field) {
++    $this->query->add_where_expression($this->options['group'], '(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid)' . $this->operator . ' :value', array(':value' => $this->value['value']));
++  }
++
++  function op_empty($field) {
++    if ($this->operator == 'empty') {
++      $operator = "IS NULL";
++    }
++    else {
++      $operator = "IS NOT NULL";
++    }
++
++    $this->query->add_where_expression($this->options['group'], '(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid) ' . $this->operator);
++  }
++
++  function op_regex($field) {
++    $this->query->add_where_expression($this->options['group'], '(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid) RLIKE :value', array(':value' => $this->value['value']));
++  }
++}
+diff --git a/modules/node/views_handler_sort_node_version_count.inc b/modules/node/views_handler_sort_node_version_count.inc
+new file mode 100644
+index 0000000..a8e1cf6
+--- /dev/null
++++ b/modules/node/views_handler_sort_node_version_count.inc
+@@ -0,0 +1,19 @@
++<?php
++
++/**
++ * @file
++ * Definition of views_handler_sort_node_version_count.
++ */
++
++/**
++ * A handler that sorts on the total count of versions/revisions of a node.
++ *
++ * @ingroup views_sort_handlers
++ */
++class views_handler_sort_node_version_count extends views_handler_sort {
++  function query() {
++    $this->ensure_my_table();
++
++    $this->query->add_orderby(NULL, '(SELECT COUNT(vid) FROM {node_revision} WHERE nid = {' . $this->table_alias . '}.nid)', $this->options['order'], 'sort_node_version_count');
++  }
++}
+diff --git a/views.info b/views.info
+index 474510c..ec09dcf 100644
+--- a/views.info
++++ b/views.info
+@@ -133,11 +133,14 @@ files[] = modules/node/views_handler_field_node_revision_link_delete.inc
+ files[] = modules/node/views_handler_field_node_revision_link_revert.inc
+ files[] = modules/node/views_handler_field_node_path.inc
+ files[] = modules/node/views_handler_field_node_type.inc
++files[] = modules/node/views_handler_field_node_version_count.inc
+ files[] = modules/node/views_handler_filter_history_user_timestamp.inc
+ files[] = modules/node/views_handler_filter_node_access.inc
+ files[] = modules/node/views_handler_filter_node_status.inc
+ files[] = modules/node/views_handler_filter_node_type.inc
+ files[] = modules/node/views_handler_filter_node_uid_revision.inc
++files[] = modules/node/views_handler_filter_node_version_count.inc
++files[] = modules/node/views_handler_sort_node_version_count.inc
+ files[] = modules/node/views_plugin_argument_default_node.inc
+ files[] = modules/node/views_plugin_argument_validate_node.inc
+ files[] = modules/node/views_plugin_row_node_rss.inc

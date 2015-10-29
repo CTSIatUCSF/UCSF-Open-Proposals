@@ -1,0 +1,78 @@
+<?php
+
+/**
+ * @file
+ * CTSI custom Context plugins.
+ *
+ * Defines custom condition and reaction plugins for the Context module.
+ */
+
+/**
+ * Implements hook_init().
+ */
+function ctsi_context_init() {
+  if ($plugin = context_get_plugin('condition', 'nodetype_path')) {
+    $plugin->execute();
+  }
+  if ($plugin = context_get_plugin('condition', 'destination')) {
+    $plugin->execute();
+  }
+}
+
+/**
+ * Implements hook_context_plugins().
+ */
+function ctsi_context_context_plugins() {
+  $plugins = array();
+
+  $plugins['ctsi_context_context_condition_nodetype_path'] = array(
+    'handler' => array(
+      'path' => drupal_get_path('module', 'ctsi_context') . '/plugins',
+      'file' => 'ctsi_context_context_condition_nodetype_path.inc',
+      'class' => 'ctsi_context_context_condition_nodetype_path',
+      'parent' => 'context_condition',
+    ),
+  );
+
+  $plugins['ctsi_context_context_condition_destination'] = array(
+    'handler' => array(
+      'path' => drupal_get_path('module', 'ctsi_context') . '/plugins',
+      'file' => 'ctsi_context_context_condition_destination.inc',
+      'class' => 'ctsi_context_context_condition_destination',
+      'parent' => 'context_condition',
+    ),
+  );
+
+  return $plugins;
+}
+
+
+/**
+ * Implements hook_context_registry().
+ */
+function ctsi_context_context_registry() {
+  return array(
+    'conditions' => array(
+      'nodetype_path' => array(
+        'title' => t('Node type related paths'),
+        'plugin' => 'ctsi_context_context_condition_nodetype_path',
+        'description' => t('Match paths that are related to the specified node types, or to a node of those types (e.g. Notifications node subscription forms)'),
+      ),
+      'destination' => array(
+        'title' => t('Destination'),
+        'plugin' => 'ctsi_context_context_condition_destination',
+        'description' => t('Match destination values'),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_ctools_plugin_api().
+ */
+function ctsi_context_ctools_plugin_api($module, $api) {
+  if ($module == 'context' && $api == 'plugins') {
+    return array('version' => 3);
+  }
+}
+

@@ -1,0 +1,12 @@
+diff --git a/boxes.js b/boxes.js
+index 4348b27..732eaa3 100644
+--- a/boxes.js
++++ b/boxes.js
+@@ -103,7 +103,6 @@
+         }
+         if ($(this).parents(".block").find(".block-configure").length > 0) {
+           $(this).parents(".block").find(".block-configure").after($(this).find("li.edit"));
+-          $(this).parents(".block").find(".block-configure").detach();
+         }
+       });
+ 

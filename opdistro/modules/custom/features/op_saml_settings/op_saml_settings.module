@@ -1,0 +1,8 @@
+<?php
+/**
+ * @file
+ * Code for the Open Proposals SAML Settings feature.
+ */
+
+include_once 'op_saml_settings.features.inc';
+

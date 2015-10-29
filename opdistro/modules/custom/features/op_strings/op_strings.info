@@ -1,0 +1,10 @@
+name = Open Proposals String Overrides
+core = 7.x
+package = OP Features
+version = 7.x-1.x-dev
+project = op_strings
+dependencies[] = strongarm
+features[ctools][] = strongarm:strongarm:1
+features[features_api][] = api:2
+features[variable][] = locale_custom_disabled_strings_en
+features[variable][] = locale_custom_strings_en

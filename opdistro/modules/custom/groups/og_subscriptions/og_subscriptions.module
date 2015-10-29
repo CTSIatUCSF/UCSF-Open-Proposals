@@ -1,0 +1,327 @@
+<?php
+
+/**
+ * @file
+ * Subscriptions to organic groups.
+ *
+ * OG Subscriptions extends the subscription module to allow users to
+ * subscribe by group. If a user subscribes to a group he will receive
+ * notifications each time a node is published to that group. The user
+ * can also select to receive notifications when such a node is updated or
+ * commented.
+ */
+
+/**
+ * Implements hook_subscriptions().
+ *
+ * @param $op
+ * @param null $arg0
+ * @param null $arg1
+ * @param null $arg2
+ *
+ * @return array|null
+ *
+ * @ingroup hooks
+ */
+function og_subscriptions_subscriptions($op, $arg0 = NULL, $arg1 = NULL, $arg2 = NULL) {
+  static $stypes = array('group' => array('node', 'gid'));
+  $function = '_og_subscriptions_' . $op;
+  if (function_exists($function)) {
+    return $function($arg0, $arg1, $arg2);
+  }
+  switch ($op) {
+    case 'queue':
+      // $arg0 is $event array.
+      if ($arg0['module'] == 'node') {
+        $node = $arg0['node'];
+        // OG audience field sometimes has meaningful index values - not just zero
+        $gids = _og_subscriptions_node_gids($node);
+        if ($gid = array_shift($gids)) {
+          $params['node']['gid'] = array(
+            'join' => array(
+              'table' => 'field_data_group_group',
+              'alias' => 'fdgg',
+              'on' => (db_driver() != 'pgsql' ? 's.value = fdgg.entity_id' : 's.value = CAST(fdgg.entity_id AS VARCHAR)')
+            ),
+            'where' => array(array('fdgg.entity_id', $gid, '=')),
+            'groupby' => 'fdgg.entity_id',
+          );
+          if ($arg0['type'] == 'comment') {
+            $params['node']['gid']['where'][] = array('s.send_comments', 1, '=');
+          }
+          elseif ($arg0['type'] == 'node' && $arg0['action'] == 'update') {
+            $params['node']['gid']['where'][] = array('s.send_updates', 1, '=');
+          }
+          return $params;
+        }
+      }
+      break;
+
+    case 'fields':
+      // $arg0 is module.
+      if ($arg0 == 'node' || $arg0 == 'comment') {
+        $tr = 't';
+        return array(
+          'gid' => array(
+            'data_function' => 'og_subscriptions_data',
+            'subs_mod' => 'og_subscriptions',
+            'subs_type' => $tr('group'),
+            'mailkey' => 'node-type-',
+          ),
+        );
+      }
+      break;
+
+    case 'access':
+      // $arg2 is the node.
+      if ($arg2 != null) {
+        global $user;
+        // OG audience field sometimes has meaningful index values - not just zero
+        $gids = _og_subscriptions_node_gids($arg2);
+        if ($gid = array_shift($gids)) {
+          $group = node_load($gid);
+          $is_private = $group->group_access[LANGUAGE_NONE][0]['value'];
+          if ($is_private && !in_array($gid, $user->og_user_node[LANGUAGE_NONE])) {
+            return 0;
+          }
+        }
+      }
+      return 1;
+      break;
+
+    case 'stypes':
+      return $stypes;
+
+    case 'stype':
+      return (isset($stypes[$arg0]) ? array_merge( $stypes[$arg0], array($arg1, $arg2)) : NULL);
+  }
+  return NULL;
+}
+
+/**
+ * Implements _hook_node_options(), subhook of hook_subscriptions().
+ *
+ * This is called by subscriptions_ui_node_form() in subscriptions_ui.module.
+ *
+ * @param $account
+ * @param $node
+ *
+ * @return array|null
+ *
+ * @ingroup form
+ * @ingroup hooks
+ *
+ * @see subscriptions_ui_node_form()
+ */
+function _og_subscriptions_node_options($account, $node) {
+  if (!user_access('subscribe to groups')) {
+    return NULL;
+  }
+  $options = array();
+  $groups_to_omit = variable_get('subscriptions_omitted_group', array());
+  // OG audience field sometimes has meaningful index values - not just zero
+  $gids = _og_subscriptions_node_gids($node);
+  if ($gid = array_shift($gids)) {
+    if (!in_array($gid, $groups_to_omit)) {
+      $group = node_load($gid);
+      $options['gid'][] = array(
+        'name' => t('Group %group content', array('%group' => $group->title)),
+        'params' => array('module' => 'node', 'field' => 'gid', 'value' => $gid),
+        'link' => 'group/' . $gid,
+      );
+      $options['gid'][] = array(
+        'name' => t('Group %group content by %name', array('%group' =>  $group->title, '%name' => format_username(user_load($node->uid)))),
+        'params' => array(
+                      'module' => 'node',
+                      'field' => 'gid',
+                      'value' => $gid,
+                      'author_uid' => $node->uid
+                    ),
+        'link' => 'group/' . $gid . '/' . $node->uid,
+      );
+    }
+  }
+  return $options;
+}
+
+/**
+ * Implements _hook_types(), subhook of hook_subscriptions().
+ *
+ * This is called by subscriptions_types() in subscriptions.module.
+ *
+ * @return array
+ *   Returns information about types for Subscriptions module interface.
+ *
+ * @ingroup form
+ * @ingroup hooks
+ *
+ * @see subscriptions_types()
+ */
+function _og_subscriptions_types() {
+  $types['group'] = array(
+    'title'      => 'Groups',
+    'page'       => 'og_subscriptions_page_group',
+    'fields'     => array('node', 'gid'),
+    'weight'     => -20,
+    'access'     => 'subscribe to groups',
+    'permission' => array(
+    'title'       => t('Subscribe to groups'),
+    'description' => t('Subscribe to organic groups.')
+    ),
+  );
+  return $types;
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Adds the Group Settings part to SUBSCRIPTIONS_CONFIG_PATH.
+ *
+ * @param array $form
+ * @param array $form_state
+ *
+ * @ingroup hooks
+ * @ingroup form
+ */
+function og_subscriptions_form_subscriptions_settings_form_alter(array &$form, array &$form_state) {
+  _subscriptions_module_load_include('og_subscriptions', 'admin.inc');
+  _og_subscriptions_form_subscriptions_settings_form_alter($form, $form_state);
+}
+
+/**
+ * Returns a list of groups subscriptions.
+ *
+ * @param array $form
+ * @param int $uid
+ *   ID of a user if >0 or of a role if <0.
+ *
+ * @return array
+ *
+ * @ingroup form
+ */
+function og_subscriptions_page_group(array $form, $uid) {
+  $groups = og_get_all_group();
+
+  $list_of_groups = array();
+  $omits = variable_get('subscriptions_omitted_group', array());
+  global $user;
+  $account = user_load($user->uid);
+  if (isset($account->og_user_node)) {
+    foreach ($account->og_user_node[LANGUAGE_NONE] as $group) {
+      $gid = $group['target_id'];
+      if (!in_array($gid, $omits) || in_array('administrator', $account->roles)) {
+        $list_of_groups[] = $gid;
+      }
+    }
+  }
+
+  if (count($list_of_groups) > 0) {
+    _subscriptions_module_load_include('og_subscriptions', 'admin.inc');
+    return _og_subscriptions_group_form($form, $uid, $list_of_groups);
+  }
+  else {
+    return array(array('#markup' => t('You are a member of no groups.')));
+  }
+}
+
+/**
+ * Provides the data for resolving tokens.
+ *
+ * @param array $data
+ * @param $node
+ * @param array $queue_item
+ */
+function og_subscriptions_data(array &$data, $node, array $queue_item) {
+  $data['subs']['group'] = node_load($queue_item['value']);
+  subscriptions_content_data($data, $node, $queue_item);
+}
+
+/**
+ * Implements hook_node_delete().
+ *
+ * Remove group subscriptions when the underlying group node is removed.
+ *
+ * @param $node
+ *
+ * @return
+ *
+ * @ingroup hooks
+ */
+function og_subscriptions_node_delete($node) {
+  if (og_is_group('node', $node)) {
+    db_delete('subscriptions_queue')
+      ->condition('module', 'node')
+      ->condition('field', 'gid')
+      ->condition('value', $node->nid)
+      ->execute();
+    subscriptions_delete_for_all_users('node', 'gid', $node->nid);
+  }
+}
+
+/**
+ * Implements hook_disable().
+ *
+ * Remove our queue items.
+ *
+ * @ingroup hooks
+ */
+function og_subscriptions_disable() {
+  db_delete('subscriptions_queue')
+    ->condition('module', 'node')
+    ->condition('field', 'gid')
+    ->execute();
+}
+
+/**
+ * Implements hook_og_membership_insert().
+ *
+ * Automatically subscribe a user to a group when they are added to the group.
+ *
+ * @param $node
+ *
+ * @return
+ *
+ * @ingroup hooks
+ */
+function og_subscriptions_og_membership_insert(OgMembership $og_membership) {
+  if (variable_get('subscriptions_group_autosubscribe', 0) == 1) {
+    if ($og_membership->entity_type == 'user') {
+      $account = user_load($og_membership->etid);
+      subscriptions_write_subscription('node', 'gid', $og_membership->gid, -1, $og_membership->etid, _subscriptions_get_setting('send_interval', $account), 1, 1);
+    }
+  }
+}
+
+/**
+ * Implements hook_og_membership_delete().
+ *
+ * Remove a user's subscription from a group when they are no longer a member.
+ *
+ * @param $og_membership
+ *
+ * @return
+ *
+ * @ingroup hooks
+ */
+function og_subscriptions_og_membership_delete(OgMembership $og_membership) {
+  if (variable_get('subscriptions_group_autounsubscribe', 1) == 1) {
+    if ($og_membership->entity_type == 'user') {
+      subscriptions_delete($og_membership->etid, 'node', 'gid', $og_membership->gid);
+    }
+  }
+}
+
+/**
+ * Utility function to return group audience field target_id values
+ */
+function _og_subscriptions_node_gids($node, $field_name = 'og_group_ref') {
+  $gids = array();
+  if ($items = field_get_items('node', $node, $field_name)) {
+    foreach ($items as $item) {
+      if (isset($item['target_id'])) {
+        $gids[$item['target_id']] = $item['target_id'];
+      }
+    }
+  }
+  return $gids;
+}

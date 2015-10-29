@@ -1,0 +1,65 @@
+diff --git a/subscriptions_content.admin.inc b/subscriptions_content.admin.inc
+index 01b37ef..dc58d40 100644
+--- a/subscriptions_content.admin.inc
++++ b/subscriptions_content.admin.inc
+@@ -284,9 +284,9 @@ function _subscriptions_content_type_form(array $form, $uid) {
+   foreach (node_type_get_types() as $type) {
+     // add the active subscriptions
+     $type_name = check_plain($type->name);
+-    if (in_array($type->type, $omits)) {
++    if (in_array($type->type, $omits, TRUE)) {
+       if (user_access('subscribe to all content types') || user_access('administer site configuration')) {
+-        if (in_array($type->type, $blockeds)) {
++        if (in_array($type->type, $blockeds, TRUE)) {
+           $type_name = '<span class="error" title="' . t('This content type is blocked.') . '">' . $type_name . '</span>&nbsp;' . SUBSCRIPTIONS_UNAVAILABLE;
+         }
+         else {
+diff --git a/subscriptions_content.module b/subscriptions_content.module
+index 79e8837..d81619a 100644
+--- a/subscriptions_content.module
++++ b/subscriptions_content.module
+@@ -119,21 +119,23 @@ function _subscriptions_content_node_options($account, $node) {
+   // Default node, field are the first three indexes, but they can be overridden in params
+   // Thread
+   $options = array();
+-  /** @var $statics array */
+-  $statics = variable_get('subscriptions_static_content_types', array());
+-  if (!in_array($node->type, $statics)) {
+-    $options['nid'][] = array(
+-      'name' => t('Subscribe to this page'),
+-      'params' => array('module' => 'node', 'field' => 'nid', 'value' => $node->nid),
+-      'link' => 'node/' . $node->nid,
+-    );
+-    $options['nid']['weight'] = -4;
++  if (user_access('subscribe to content', $account)) {
++    /** @var $statics array */
++    $statics = variable_get('subscriptions_static_content_types', array());
++    if (!in_array($node->type, $statics, TRUE)) {
++      $options['nid'][] = array(
++        'name' => t('Subscribe to this page'),
++        'params' => array('module' => 'node', 'field' => 'nid', 'value' => $node->nid),
++        'link' => 'node/' . $node->nid,
++      );
++      $options['nid']['weight'] = -4;
++    }
+   }
+-  /** @var $unlisteds array */
+-  $unlisteds = variable_get('subscriptions_unlisted_content_types', array());
+   if (user_access('subscribe to content types', $account)) {
++    /** @var $unlisteds array */
++    $unlisteds = variable_get('subscriptions_unlisted_content_types', array());
+     $unlisted_tag = '';
+-    if (in_array($node->type, $unlisteds)) {
++    if (in_array($node->type, $unlisteds, TRUE)) {
+       if (user_access('subscribe to all content types', $account)) {
+         $unlisted_tag = '&nbsp;' . SUBSCRIPTIONS_UNAVAILABLE;
+       }
+@@ -640,7 +642,7 @@ function _subscriptions_content_autosubscribe($content_type, $module, $field, $v
+ function subscriptions_content_type_is_blocked($content_type) {
+   /** @var $blockeds array */
+   $blockeds = variable_get('subscriptions_blocked_content_types', array());
+-  return in_array($content_type, $blockeds);
++  return in_array($content_type, $blockeds, TRUE);
+ }
+ 
+ /**

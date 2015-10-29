@@ -1,0 +1,284 @@
+<?php
+/**
+ * @file
+ *  Miscellaneous custom group code for open-proposals.ucsf.edu
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function ucsf_custom_menu() {
+
+  $items = array();
+
+  // handtailored Excel output
+  $items['custom/edin16/summary/export'] = array(
+    'page callback' => 'ucsf_custom_edin16_summary_xls',
+    'access callback' => true,
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Hand-crafted summary pseudo-Excel export
+ *  for the EdInno2016 group, or any other group
+ *  with these pretty specific fields
+ */
+function ucsf_custom_edin16_summary_xls($gid=NULL) {
+
+  if (!($gid and $group = opg_core_gid_to_group($gid))) {
+    drupal_not_found();
+    return;
+  }
+  $typeterms = array();
+  if ($ogv = og_vocab_relation_get_by_group($group['group_type'], $group['gid'])) {
+    $ogvids = array();
+    foreach ($ogv as $ogvoc) {
+      if ($vocabulary = taxonomy_vocabulary_load($ogvoc->vid)) {
+        if ($vocabulary->name == 'Proposal Type') {
+          $ogvids[$ogvoc->vid] = $ogvoc->vid;
+        }
+      }
+    }
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'taxonomy_term')->propertyCondition('vid', $ogvids);
+    $result = $query->execute();
+    if (!empty($result['taxonomy_term'])) {
+      $typeterms = entity_load('taxonomy_term', array_keys($result['taxonomy_term']));
+    }
+  }
+
+  $header = array(
+    'i' => '#',
+    'realname' => 'Author',
+    'title' => 'Proposal Title',
+    'proposal_type' => 'Proposal Type',
+    'field_opg_status' => 'Status',
+    'created' => 'Created on',
+    'comment_count' => 'Number of Comments',
+    'revision_count' => 'Number of Revisions',
+    'field_opg_edin16_budget' => 'Budget',
+    'field_opg_edin16_chair_los' => 'Letter of Support - Chair',
+    'field_opg_edit16_prog_los' => 'Letter of Support - Program/Course Director',
+    'field_opg_edin16_irb' => 'IRB Approval or Exemption',
+    'field_opg_edin16_learner' => 'Learner Focus',
+    'field_opg_edin16_key' => 'Key priorities',
+    'field_opg_edin16_approach' => 'Primary approaches and settings',
+  );
+  $empty = array();
+  foreach (array_keys($header) as $k) {
+    $empty[$k] = '';
+  }
+
+  $checkboxen = array(
+    'field_opg_edin16_learner' => 'Learner Focus',
+    'field_opg_edin16_key' => 'Key priorities',
+    'field_opg_edin16_approach' => 'Primary approaches and settings',
+  );
+
+  $filefields = array(
+    'field_opg_edin16_budget' => 'Budget',
+    'field_opg_edin16_chair_los' => 'Letter of Support - Chair',
+    'field_opg_edin16_prog_los' => 'Letter of Support - Program/Course Director',
+    'field_opg_edin16_irb' => 'IRB Approval or Exemption',
+  );
+
+  $content_type = 'edin_2016';
+
+  $status_name = 'opg_status';
+  $excluded = array(
+    'Administrative',
+  );
+  $excluded_nids = array();
+  $exclude_sql = null;
+  if ($status_name and $excluded) {
+    $query = new EntityFieldQuery();
+    $query->entityCondition('entity_type', 'taxonomy_term')
+      ->entityCondition('bundle', $status_name)
+      ->propertyCondition('name', (array)$excluded, 'IN')
+    ;
+    $result = $query->execute();
+    if (isset($result['taxonomy_term']) and is_array($result['taxonomy_term'])) {
+      foreach ($result['taxonomy_term'] as $tid => $item) {
+        $excluded_nids += taxonomy_select_nodes($tid, false);
+      }
+    }
+  }
+  if ($excluded_nids) {
+    $exclude_sql = ' and n.nid not in (' . implode(', ', $excluded_nids) . ') ';
+  }
+
+
+  $sql = <<<EOQ
+select n.nid
+  , count(distinct c.cid) as comment_count
+  , count(distinct r.vid) as revision_count
+  , rn.realname
+from {node} n
+  left join {comment} c on n.nid = c.nid
+  left join {node_revision} r on n.nid = r.nid and n.vid != r.vid
+  left join {realname} rn on n.uid = rn.uid
+where n.type = '{$content_type}'
+  and n.status = 1
+  {$exclude_sql}
+group by n.nid
+order by n.created, n.nid
+EOQ;
+  $i = 0;
+  $nids = array();
+  if ($result = db_query($sql)) {
+    foreach ($result as $row) {
+      $row->i = ++$i;
+      $nids[$row->nid] = $row;
+    }
+  }
+
+  $rows = array();
+  foreach ($nids as $nid => $nrow) {
+    $row = $empty;
+    if ($node = node_load($nid)) {
+      $wrapper = entity_metadata_wrapper('node', $node);
+
+      $row['i'] = $nrow->i;
+      $row['comment_count'] = $nrow->comment_count;
+      $row['revision_count'] = $nrow->revision_count;
+      $row['realname'] = $nrow->realname;
+      $row['title'] = l($node->title, 'node/' . $nid, array('absolute'=>true));
+      $row['created'] = date('m/d/Y', $node->created);
+
+      foreach ($row as $k => &$v) {
+        switch ($k) {
+          case 'i':
+          case 'comment_count':
+          case 'revision_count':
+          case 'realname':
+          case 'title':
+          case 'created':
+          case 'proposal_type':
+            break;
+
+          default:
+            if (isset($wrapper->{$k})) {
+              $kvalue = $wrapper->{$k}->value();
+              if (is_array($kvalue)) {
+                if (isset($kvalue['fid'])) {
+                  $v = 'uploaded';
+                }
+                else {
+                  $kvkeys = array_keys($kvalue);
+                  if ($kvkeys == array_filter($kvkeys, 'is_numeric')) {
+                    $v = implode('; ', $kvalue);
+                  }
+                  else {
+                    // echo '<pre>';
+                    // echo 'field ', $k, ' is array with non-numeric keys?'; var_dump($kvalue, $kvkeys, array_filter($kvkeys, 'is_numeric'));
+                    // echo '</pre>';
+                  }
+                }
+              }
+              elseif (is_object($kvalue)) {
+                if (isset($kvalue->tid)) {
+                  $v = $kvalue->name;
+                }
+              }
+              elseif ($kvalue and is_scalar($kvalue)) {
+                $v = $kvalue;
+              }
+            }
+            break;
+        }
+      }
+
+      if (isset($wrapper->field_opg_primary_author)) {
+        $pa_entity = $wrapper->field_opg_primary_author->value();
+        $pa_entity_type = $wrapper->field_opg_primary_author->type();
+        $pa = entity_metadata_wrapper($pa_entity_type, $pa_entity);
+        if (isset($pa->field_opg_not_pa) and $pa->field_opg_not_pa->value()) {
+          $paname = '';
+          $panames = array();
+          foreach (array('field_opg_pa_first','field_opg_pa_last') as $panf) {
+            if (isset($pa->{$panf}) and $panv = trim($pa->{$panf}->value())) {
+              $panames[] = $panv;
+            }
+          }
+          $paname = implode(' ', $panames);
+          if (isset($pa->field_opg_pa_url) and $paurl = trim($pa->field_opg_pa_url->value())) {
+            $paname = l($paname, $paurl, array('absolute'=>true));
+          }
+          $row['realname'] = $paname;
+        }
+      }
+
+      if (isset($wrapper->og_vocabulary)) {
+        foreach ($wrapper->og_vocabulary->value() as $term) {
+          $row['proposal_type'] = $term->name;
+        }
+      }
+
+      foreach ($checkboxen as $k => &$v) {
+        if (isset($wrapper->{$k})) {
+          if (is_string($v)) {
+            $v = entity_metadata_field_options_list($k, $wrapper->{$k}->info());
+          }
+          $bvalues = array();  
+          foreach ($wrapper->{$k}->value() as $kv) {
+            if (isset($v[$kv])) {
+              $bvalues[$kv] = $v[$kv];
+            }
+            else {
+              $bvalues[$kv] = $kv . '(not in list)';
+            }
+          }
+          // splits values into multiple cells
+          $row[$k] = implode("\n<br/>\n", $bvalues);
+          // all in one cell
+          // $row[$k] = implode('; ', $bvalues);
+        }
+      }
+    }
+    $rows[] = $row;
+  }
+  $output = <<<EOT
+<html>
+  <body>
+    <table>
+
+EOT;
+  $output .= "      <thead>\n";
+  $output .= '        <tr><th>' . implode('</th><th>', $header) . "</th></tr>\n";
+  $output .= "      </thead>\n";
+  $output .= "      <tbody>\n";
+  foreach ($rows as $row) {
+  $output .= '        <tr><td valign="top">' . implode('</td><td valign="top">', $row) . "</td></tr>\n";
+  }
+  $output .= "      </tbody>\n";
+  $output .= <<<EOT
+    </table>
+  </body>
+</html>
+EOT;
+  // $output = "<pre>\n";
+  // $output .= print_r($rows);
+  // $output .= print_r($nids);
+
+  $filename = 'edinnovations-2015-summary-' . date('c') . '.xls';
+  $mime_type = 'application/vnd.ms-excel';
+
+  header("Content-Type: $mime_type");
+  header("Content-Disposition: attachment; filename=\"$filename\"");
+  header('Content-Transfer-Encoding: binary');
+  header('Expires: 0');
+
+  // not 100% sure of these, but don't seem to hurt and may keep various
+  // browsers from cacheing the content
+  header('Cache-Control: must-revalidate, post-check=0, pre-check=0');
+  header('Pragma: public');
+  header('Pragma: no-cache');
+
+  print $output;
+
+  exit;
+}
+

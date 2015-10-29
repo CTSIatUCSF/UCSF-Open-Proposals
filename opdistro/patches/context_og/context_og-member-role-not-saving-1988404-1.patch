@@ -1,0 +1,13 @@
+diff --git a/plugins/context_og_condition_member_role.inc b/plugins/context_og_condition_member_role.inc
+index f4e812e..42259c3 100644
+--- a/plugins/context_og_condition_member_role.inc
++++ b/plugins/context_og_condition_member_role.inc
+@@ -16,7 +16,7 @@ class context_og_condition_member_role extends context_condition {
+ 
+     $roles = array();
+     foreach ($rids as $rid => $fields) {
+-      $roles[$rid] = $fields->group_type . '-' . $fields->group_bundle . ': ' . $fields->name;
++      $roles[$fields->rid] = $fields->group_type . '-' . $fields->group_bundle . ': ' . $fields->name;
+     }
+     return $roles;
+   }

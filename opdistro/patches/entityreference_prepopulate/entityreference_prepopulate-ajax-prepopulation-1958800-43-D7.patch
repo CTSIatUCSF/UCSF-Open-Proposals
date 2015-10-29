@@ -1,0 +1,74 @@
+diff --git a/entityreference_prepopulate.module b/entityreference_prepopulate.module
+index 9c06140..e175327 100644
+--- a/entityreference_prepopulate.module
++++ b/entityreference_prepopulate.module
+@@ -64,12 +64,6 @@ function entityreference_prepopulate_field_update_instance($instance, $prior_ins
+ function entityreference_prepopulate_field_attach_form($entity_type, $entity, &$form, &$form_state, $langcode) {
+   list($id,, $bundle) = entity_extract_ids($entity_type, $entity);
+ 
+-  if (!empty($form_state['triggering_element']['#ajax'])) {
+-    // We are inside AJAX, so values can't be taken from URL at the
+-    // moment, so we prevent applying any "fallback" behaviors such as redirect.
+-    return;
+-  }
+-
+   // Check if there is a field that needs to be prepopulated attached to the
+   // given entity.
+   $found = FALSE;
+@@ -234,24 +228,10 @@ function entityreference_prepopulate_get_values($field, $instance, $validate = T
+     $validate,
+   );
+ 
+-  if (module_exists('og') && og_is_group_audience_field($field_name)) {
+-    if (empty($instance['field_mode'])) {
+-      // Group audience field, but no field-mode provided.
+-      // So we iterate over the "default" and possibly "admin" field-modes,
+-      // and return those values together.
+-      $ids = array();
+-      $field_modes = !user_access('administer group') ? array('default') : array('default', 'admin');
+-      foreach ($field_modes as $field_mode) {
+-        $instance['field_mode'] = $field_mode;
+-        if ($og_ids = entityreference_prepopulate_get_values($field, $instance)) {
+-          $ids = array_merge($ids, $og_ids);
+-        }
+-      }
+-
+-      // Return the values.
+-      return $ids;
+-    }
++  $is_audience_field = module_exists('og') && og_is_group_audience_field($field_name);
+ 
++  // Add field mode to ID if the audience field has one.
++  if ($is_audience_field && !empty($instance['field_mode'])) {
+     $identifier[] = $instance['field_mode'];
+   }
+ 
+@@ -261,10 +241,27 @@ function entityreference_prepopulate_get_values($field, $instance, $validate = T
+     return $cache[$identifier];
+   }
+ 
++  if ($is_audience_field && empty($instance['field_mode'])) {
++    // Group audience field, but no field-mode provided.
++    // So we iterate over the "default" and possibly "admin" field-modes,
++    // and return those values together.
++    $ids = array();
++    $field_modes = !user_access('administer group') ? array('default') : array('default', 'admin');
++    foreach ($field_modes as $field_mode) {
++      $instance['field_mode'] = $field_mode;
++      if ($og_ids = entityreference_prepopulate_get_values($field, $instance)) {
++        $ids = array_merge($ids, $og_ids);
++      }
++    }
++
++    // Cache and return the values.
++    return $cache[$identifier] = $ids;
++  }
++
+   $cache[$identifier] = $ids = array();
+ 
+   // Check if we have cached values.
+-  if (!$ids = entityreference_prepopulate_get_values_from_cache($field, $instance)) {
++  if (!($ids = entityreference_prepopulate_get_values_from_cache($field, $instance))) {
+     // Get the providers.
+     $enabled_providers = !empty($instance['settings']['behaviors']['prepopulate']['providers']) ? array_filter($instance['settings']['behaviors']['prepopulate']['providers']) : array();
+ 

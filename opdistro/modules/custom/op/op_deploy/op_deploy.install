@@ -1,0 +1,297 @@
+<?php
+
+/**
+ * @file
+ *  Install, update, and uninstall functions for the op_deploy module.
+ *
+ *  Examples of how to do things in update hooks:
+ *
+ *    Enable modules:
+ *      $enable = array('mything', 'myotherthing');
+ *      $enable_dependents = TRUE; // default - see note below
+ *      module_enable($enable, $enable_dependents);
+ *
+ *    Disable modules:
+ *      $disable = array('mything', 'myotherthing');
+ *      $disable_dependents = TRUE; // default - see note below
+ *      module_disable($disable, $disable_dependents);
+ *
+ *    Uninstall modules:
+ *      $uninstall = array('mything', 'myotherthing');
+ *      $uninstall_dependents = TRUE; // default - see note below
+ *      drupal_uninstall_modules($uninstall, $uninstall_dependents);
+ *
+ *      About the dependents flags, api docs for most functions say:
+ *        "This incurs a significant performance cost, 
+ *        so use FALSE if you know $module_list is already complete 
+ *        and in the correct order. Defaults to TRUE."
+ *
+ *  Revert features:
+ *
+ *    Revert one feature completely:
+ *      // no return value - can only infer lack of death means success
+ *      features_revert_module('mything');
+ *
+ *    Revert specific feature components:
+ *      // no return value - can only infer lack of death means success
+ *      features_revert(array(
+ *        'my_first_module' => array('field'),
+ *        'my_other_module' => array(
+ *          'field',
+ *          'field_group',
+ *          'views_view',
+ *          ),
+ *      ));
+ *
+ *    Get a list of components in a feature:
+ *      $feature = features_get_features('mything');
+ *      $components = array_keys($feature->info['features']);
+ *
+ *
+ *  Update hooks just return t('I worked out') or nothing.
+ *
+ *  In case of an error, throw an exception with an error message.
+ *    throw new DrupalUpdateException('Something went wrong; here is what you should do.');
+ *
+ */
+
+/**
+ * Implements hook_install().
+ */
+function op_deploy_install() {
+}
+
+/**
+ * Implements hook_enable().
+ */
+function op_deploy_enable() {
+  include('op_deploy.rate_widgets.inc');
+  op_deploy_setup_rate_widgets();
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function op_deploy_uninstall() {
+}
+
+/**
+ * Fix standard install profile record in system table
+ *  See https://drupal.org/node/1170362
+ */
+function op_deploy_update_7001() {
+  db_query('update system set status = 1 where filename = :filename', array(':filename' => 'profiles/standard/standard.profile'));
+}
+
+/**
+ * Enable CHV CWI 2.0 Phase 2 Plan 9
+ */
+function op_deploy_update_7002(&$sandbox) {
+  $new_features = array(
+    'op_chvc2p2',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Enable SOM Transformers 2014
+ */
+function op_deploy_update_7003(&$sandbox) {
+  $new_features = array(
+    'op_somttg14',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Enable migrated Accelerate forums
+ */
+function op_deploy_update_7004(&$sandbox) {
+  $new_features = array(
+    'op_adsup11',
+    'op_pilot2012',
+    'op_ren10',
+    'op_idea09',
+    'op_stim09',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Enable new 2016 CTSI Demos forum;
+ * Update migrated forums with some view changes
+ */
+function op_deploy_update_7005(&$sandbox) {
+  $new_features = array(
+    'op_demos16',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+
+  $revert_features = array(
+    'op_adsup11',
+    'op_pilot2012',
+    'op_ren10',
+    'op_idea09',
+    'op_stim09',
+  );
+  foreach ($revert_features as $feature_name) {
+    features_revert_module($feature_name);
+  }
+}
+
+/**
+ * Disable Menu Block and Rules
+ */
+function op_deploy_update_7006(&$sandbox) {
+ $disable = array(
+  'menu_block',
+  'rules_admin',
+  'rules',
+ );
+ $disable_dependents = FALSE; 
+ module_disable($disable);
+}
+
+/**
+ * Enable new 2015 EdInnovations forum
+ */
+function op_deploy_update_7007(&$sandbox) {
+  $new_features = array(
+    'op_edin2015',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+
+  module_enable(array('globalredirect'));
+}
+
+/**
+ * Make sure active OPs block is enabled
+ */
+function op_deploy_update_7008(&$sandbox) {
+  db_query('update block set status = :status, region = :region, weight = :weight where module = :module and delta = :delta and theme = :theme'
+    , array(
+      ':status' => 1,
+      ':region' => 'sidebar_first',
+      ':weight' => -80,
+      ':module' => 'boxes',
+      ':delta' => 'open_proposals_lp_active',
+      ':theme' => 'opbamboo',
+    )
+  );
+}
+
+/**
+ * Enable new ETAC Round 3 forum
+ */
+function op_deploy_update_7009(&$sandbox) {
+  $new_features = array(
+    'op_etacr3',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Enable new Sandbox forum
+ */
+function op_deploy_update_7010(&$sandbox) {
+  $new_features = array(
+    'op_sandbox',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Enable modules and features for new OG-based architecture
+ */
+function op_deploy_update_7011(&$sandbox) {
+  $disable = array(
+    'nodeblock',
+  );
+  $disable_dependents = FALSE;
+  module_disable($disable, $disable_dependents);
+
+  $new_modules = array(
+    'context_layouts',
+    'context_og',
+    'entityreference_prepopulate',
+    'field_collection',
+    'og',
+    'og_access',
+    'og_context',
+    'og_field_access',
+    'og_subscriptions',
+    'og_ui',
+    'og_vocab',
+    'entity_autocomplete',
+    'safeword',
+    'rules_scheduler',
+    'rules_admin',
+  );
+  if (module_enable($new_modules)) {
+    drupal_set_message(t('Enabled new modules: %list', array('%list' => implode(', ', $new_modules))));
+  }
+  else {
+    throw new DrupalUpdateException('Some problem with enabling these modules: ' . implode(', ', $new_modules));
+  }
+  $new_features = array(
+    'opg_core',
+    'opg_generic',
+  );
+  op_deploy_setup_features($sandbox, $new_features);
+}
+
+/**
+ * Switch default theme from vhbamboo
+ */
+function op_deploy_update_7012(&$sandbox) {
+  if (variable_get('theme_default', '') == 'vhbamboo') {
+    theme_enable(array('opbamboo'));
+    variable_set('theme_default', 'opbamboo');
+    theme_disable(array('vhbamboo'));
+  }
+}
+
+/**
+ * Install custom Rate widgets
+ */
+function op_deploy_update_7013(&$sandbox) {
+  include('op_deploy.rate_widgets.inc');
+  op_deploy_setup_rate_widgets();
+}
+
+/**
+ * Enable new conditional fields feature module
+ */
+function op_deploy_update_7014(&$sandbox) {
+  global $base_url;
+
+  $modules = array(
+    'disable' => array(
+    ),
+    'enable' => array(
+      'entity_view_mode',
+      'securelogin',
+    ),
+  );
+  if (strpos($base_url, 'open-proposals.ucsf.edu') !== FALSE) {
+    // specific to ucsf op installations
+    $modules['features'] = array(
+      'op_condit',
+    );
+  }
+  $disable_dependents = FALSE;
+  op_deploy_process_modules($sandbox, $modules, $disable_dependents);
+}
+
+/**
+ * Disable obsolete text formats
+ */
+function op_deploy_update_7015(&$sandbox) {
+  $formats = filter_formats();
+  foreach ($formats as $id => $format) {
+    if (is_numeric($id)) {
+      filter_format_disable($format);
+      drupal_set_message(t('Disabled text format %format.', array('%format' => $format->name)));
+    }
+  }
+}

@@ -1,0 +1,13 @@
+diff --git a/subscriptions.tokens.inc b/subscriptions.tokens.inc
+index dfe661a..d6409e4 100644
+--- a/subscriptions.tokens.inc
++++ b/subscriptions.tokens.inc
+@@ -394,7 +394,7 @@ function subscriptions_token_info_alter(array &$data) {
+       'description' => t('The specific element of the array, indexed by zero-based numeric index.'),
+       'dynamic' => TRUE,
+     );
+-    $type_name = $data['types'][$type]['name'];
++    $type_name = isset($data['types'][$type]['name']) ? $data['types'][$type]['name'] : $type;
+     $data['types'][$list] = array(
+       'name' => t('Array of @type', array('@type' => $type_name)),
+       'description' => t('Tokens related to arrays of @type', array('@type' => $type_name)),

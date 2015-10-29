@@ -1,0 +1,13 @@
+diff --git a/bundle_copy.module b/bundle_copy.module
+index 52c065c..037ff3e 100755
+--- a/bundle_copy.module
++++ b/bundle_copy.module
+@@ -696,7 +696,7 @@ function bundle_copy_clone_submit($form, &$form_state) {
+     $bundle_export_callback = $bc_info[$entity_type]['bundle_export_callback'];
+     $bundle_save_callback = $bc_info[$entity_type]['bundle_save_callback'];
+ 
+-    $new_bundle = $bundle_export_callback($src_btype);
++    $new_bundle = $bundle_export_callback($src_btype, $entity_type);
+ 
+     $new_bundle->type = $new_bundle->orig_type = $new_btype;
+     $new_bundle->name = $new_bname;

@@ -1,0 +1,9 @@
+name = CTSI Profiles
+description = Custom module to link users to UCSF Profiles site
+
+version = "7.x-1.x-dev"
+project = "ctsi_profiles"
+package = "CTSI"
+
+core = 7.x
+

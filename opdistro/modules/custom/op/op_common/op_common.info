@@ -1,0 +1,6 @@
+name = OP Common
+description = Open Proposals catch-all custom module
+package = OP Custom
+project = op_common
+core = 7.x
+version = 7.x-1.x-dev

@@ -1,0 +1,6 @@
+name = UCSF Custom
+description = Catch-all custom code for open-proposals.ucsf.edu
+package = UCSF OP
+project = ucsf_custom
+core = 7.x
+version = 7.x-1.x-dev

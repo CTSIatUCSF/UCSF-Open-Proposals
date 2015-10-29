@@ -1,0 +1,8 @@
+<?php
+
+/**
+ * Adjust the weight of the simplesamlphp_auth module
+ */
+function ctsi_update_7001() {
+  db_query('update system set weight = -1 where name = :name', array(':name' => 'simplesamlphp_auth'));
+}

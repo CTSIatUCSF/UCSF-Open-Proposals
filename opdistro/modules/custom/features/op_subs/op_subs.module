@@ -1,0 +1,7 @@
+<?php
+/**
+ * @file
+ * Code for the op_subs feature.
+ */
+
+include_once 'op_subs.features.inc';

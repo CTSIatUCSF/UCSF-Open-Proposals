@@ -1,0 +1,25 @@
+<?php
+/**
+ * @file
+ * Code for the Open Proposals Global Settings feature.
+ */
+
+include_once 'op_global.features.inc';
+
+function op_global_init() {
+
+  // beautytips
+  $tips = array();
+  $tip = array(
+    'cssSelect' => '.clickme',
+    'style' => 'hulu',
+    'trigger' => 'click',
+    'shrinkToFit' => TRUE,
+    'ajaxDisableLink' => TRUE,
+    'contentSelector' => '$(this).next(".clicktalk").html()',
+  );
+  $tips['op_global_clickme'] = $tip;
+
+  beautytips_add_beautytips($tips);
+
+}

@@ -1,0 +1,21 @@
+<?php
+
+/**
+ * Implements hook_enable().
+ */
+function opg_core_enable() {
+  _opg_core_block_subs();
+}
+
+/**
+ * Block subscriptions to opg_group content type
+ */
+function opg_core_update_7001() {
+  _opg_core_block_subs();
+}
+
+function _opg_core_block_subs() {
+  $blocked = variable_get('subscriptions_blocked_content_types', array());
+  $blocked['opg_group'] = 'opg_group';
+  variable_set('subscriptions_blocked_content_types', $blocked);
+}

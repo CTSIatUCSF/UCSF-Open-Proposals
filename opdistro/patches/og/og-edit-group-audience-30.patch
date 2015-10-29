@@ -1,0 +1,16 @@
+diff --git a/og.module b/og.module
+index 4c58011..c89cafd 100755
+--- a/og.module
++++ b/og.module
+@@ -757,6 +757,11 @@ function og_form_group_reference_validate($form, &$form_state) {
+     return;
+   }
+ 
++  if (og_is_group($entity_type, $entity) && og_user_access($entity_type, $id, 'edit group', $account)) {
++    // Entity is a group and user has permission to edit the group.
++    return;
++  }
++
+   foreach (array_keys(og_get_group_audience_fields($entity_type, $bundle)) as $field_name) {
+     // If there is at least one group selected, return.
+     if (!empty($form_state['values'][$field_name][LANGUAGE_NONE])) {

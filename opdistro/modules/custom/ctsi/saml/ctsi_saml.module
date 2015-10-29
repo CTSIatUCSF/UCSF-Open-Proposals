@@ -1,0 +1,746 @@
+<?php
+
+/**
+ * Implements hook_init().
+ */
+function ctsi_saml_init() {
+  global $user;
+
+  if (!empty($user->uid) and ctsi_simplesaml_account($user->name) and empty($user->mail)) {
+    switch ($_GET['q']) {
+      case 'saml_email':
+      case 'logout':
+        break;
+
+      default:
+        // dpm($user);
+        if (strpos($_GET['q'], 'saml') === false) {
+          $destination = ctsi_destination();
+          // drupal_set_message('saml_email?destination=' . $destination);
+          drupal_goto('saml_email', array('query' => array('destination' => $destination)));
+        }
+        else {
+          // dpm('GET[q] has a saml in it');
+          // dpm($_GET['q']);
+        }
+    }
+  }
+}
+
+/**
+ * Sorta copied from user_is_anonymous()
+ *  Also allow it to work on the SAML login page
+ */
+function ctsi_saml_loginuser_is_anonymous() {
+  global $user;
+  global $menu_admin;
+
+  return (empty($user->uid) or $_GET['q'] == 'ctsi_saml_login' or !empty($menu_admin));
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ctsi_saml_menu() {
+  $items = array();
+
+  // making the actual simplesamlphp_auth login page anon only
+  //  causes it to fail because dumb. try this instead.
+  $items['ctsi_saml_login'] = array(
+    'title' => 'Logon to the site',
+    'description' => 'Provides a site login page',
+    'page callback' => 'ctsi_saml_loginpage',
+    'access callback' => 'ctsi_saml_loginuser_is_anonymous',
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['saml_email'] = array(
+    'title' => t('Set MyAccess Account Email'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ctsi_saml_email_form'),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['admin/people/samlcreate'] = array(
+    'title' => t('Add SAML user'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ctsi_saml_register_form'),
+    'access arguments' => array('administer users'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 50,
+  );
+
+  return $items;
+}
+
+/**
+ * Frontend to simplesaml_php with secure login redirect if in use
+ */
+function ctsi_saml_loginpage() {
+  global $is_https;
+
+  if (module_exists('securelogin') and !variable_get('simplesamlphp_auth_forcehttps', NULL)) {
+
+    if (!$is_https) {
+      // error_log(__FUNCTION__ . ': not https - do secure login redirect');
+      securelogin_secure_redirect();
+    }
+    else {
+      // error_log(__FUNCTION__ . ': is https');
+      if (!empty($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], 'http://') === 0) {
+        $_SERVER['HTTP_REFERER'] = preg_replace('#http://#', 'https://', $_SERVER['HTTP_REFERER'] , 1);
+        // error_log(__FUNCTION__ . ': change HTTP_REFERER to ' . $_SERVER['HTTP_REFERER']);
+      }
+      if (!empty($_REQUEST['ReturnTo']) && strpos($_REQUEST['ReturnTo'], 'http://') === 0) {
+        $_REQUEST['ReturnTo'] = preg_replace('#http://#', 'https://', $_REQUEST['ReturnTo'] , 1);
+        // error_log(__FUNCTION__ . ': change ReturnTo to ' . $_REQUEST['ReturnTo']);
+      }
+    }
+  }
+  else {
+    // error_log(__FUNCTION__ . ': no securelogin or else is force https');
+  }
+  // error_log(__FUNCTION__ . ': do simplesaml loginpage');
+  return simplesamlphp_auth_loginpage();
+}
+
+/**
+ * Implements hook_ctsi_login_type_info().
+ */
+function ctsi_saml_ctsi_login_type_info() {
+  $types = array();
+  $destination = ctsi_destination();
+  // if current page is not destination, create dest of "here?dest=ultimatedest"
+  $destination = ctsi_qdest($destination);
+  $types['saml'] = new stdClass();
+  $types['saml']->type = 'saml';
+  $types['saml']->text = t('UCSF');
+  $types['saml']->url = ctsi_simplesaml_url($destination);
+  // no simpler version
+  $types['saml']->path = $types['saml']->url;
+  $types['saml']->link = l($types['saml']->text, $types['saml']->path, array('external'=>true));
+  return $types;
+}
+
+
+/**
+ * Form for gathering an email address for SAML accounts when one is not provided by MyAccess.
+ */
+function ctsi_saml_email_form($form, &$form_state) {
+  // dpm(array('form'=>$form, 'form_state'=>$form_state), __FUNCTION__);
+  global $user;
+
+  $form = array();
+
+  $form['email'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Email'),
+    '#default_value' => $user->mail,
+    '#size' => 60,
+    '#required' => TRUE,
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Send'),
+  );
+
+  return $form;
+}
+
+/**
+ * Validate SAML account email form
+ *
+ * Check for valid email address and do duplicate checking,
+ * although we do not return an error for duplicates at this time.
+ */
+function ctsi_saml_email_form_validate($form, &$form_state) {
+  // dpm(array('form'=>$form, 'form_state'=>$form_state), __FUNCTION__);
+  global $user;
+
+  $email = $form_state['values']['email'];
+  if (!valid_email_address($email)) {
+    form_set_error('email', t('@email is not a valid email address', array('@email' => $email)));
+  }
+  if ($dups = ctsi_saml_check_duplicate_email($user->uid, $email)) {
+    // we do NOT allow duplicate emails from this form (vs from MyAccess)
+    //  Except when we do.
+    // form_set_error('email', t('@email is in use by another account', array('@email' => $email)));
+  }
+}
+
+/**
+ * Submit SAML account email form
+ *
+ * Save submitted email address for current user if none exists.
+ */
+function ctsi_saml_email_form_submit($form, &$form_state) {
+  // dpm(array('form'=>$form, 'form_state'=>$form_state), __FUNCTION__);
+  global $user;
+
+  if (!empty($user->uid) and !empty($user->name) and empty($user->mail) and !empty($form_state['values']['email'])) {
+    $edit = array('mail' => $form_state['values']['email']);
+    user_save($user, $edit);
+  }
+
+}
+
+/**
+ * Admin form for manually creating SAML accounts
+ */
+function ctsi_saml_register_form($form, &$form_state) {
+
+  $sesskey = empty($form_state['post']['form_token']) ? '' : $form_state['post']['form_token'] . '_ldap';
+
+  $form = array();
+
+  $form['eppn'] = array(
+    '#type' => 'textfield',
+    '#title' => t('EPPN'),
+    '#size' => 20,
+  );
+  if (!empty($_SESSION[$sesskey]['eppn'])) {
+    $form['eppn']['#value'] = $_SESSION[$sesskey]['eppn'];
+  }
+
+  $form['email'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Email'),
+    '#size' => 60,
+  );
+  if (!empty($_SESSION[$sesskey]['email'])) {
+    $form['email']['#value'] = $_SESSION[$sesskey]['email'];
+  }
+
+  if ($ldap = ctsi_ldap_server()) {
+    $form['#prefix'] = '<p>Enter email or EPPN to look user up from the UCSF LDAP service.</p>';
+    $form['eppn']['#required'] = false;
+    $form['email']['#required'] = false;
+  }
+  else {
+    $form['#prefix'] = '<p>The UCSF LDAP service is not accessible - enter all identifying information for the new user.</p>';
+
+    $form['eppn']['#required'] = TRUE;
+    $form['email']['#required'] = true;
+
+    $form['first_name'] = array(
+      '#type' => 'textfield',
+      '#title' => t('First Name'),
+      '#size' => 60,
+    );
+
+    $form['last_name'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Last Name'),
+      '#size' => 60,
+    );
+
+  }
+
+  $form['ldap'] = array(
+    '#type' => 'value',
+    '#value' => (bool) $ldap,
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Create account'),
+  );
+
+  return $form;
+}
+
+/**
+ * Validate admin SAML account creation form.
+ *
+ * Query UCSF LDAP service for a record matching the provided email address or EPPN, if any.
+ */
+function ctsi_saml_register_form_validate(&$form, &$form_state) {
+
+  $person = null;
+
+  if ($form_state['values']['ldap']) {
+    $query = null;
+    if (empty($form_state['values']['eppn']) and !empty($form_state['values']['email'])) {
+      $query = $form_state['values']['email'];
+    }
+    elseif (empty($form_state['values']['email']) and !empty($form_state['values']['eppn'])) {
+      $query = $form_state['values']['eppn'];
+    }
+    if ($query) {
+      if ($results = ctsi_ldap_query_people($query)) {
+        if ($found = array_shift($results)) {
+          $person = $found;
+          if (!empty($person['givenname'])) {
+            $form_state['values']['first_name'] = $person['givenname'];
+          }
+          if (!empty($person['sn'])) {
+            $form_state['values']['last_name'] = $person['sn'];
+          }
+        }
+        else {
+          // dpm('did not found ldap person for ' . $query);
+        }
+      }
+      else {
+        // dpm('did not ldap results for ' . $query);
+      }
+    }
+    else {
+      // dpm('did not ldap query');
+    }
+  }
+  else {
+    // dpm('did not ldap');
+  }
+
+  $sesskey = $form_state['values']['form_token'] . '_ldap';
+  unset($_SESSION[$sesskey]);
+
+  if (empty($form_state['values']['eppn'])) {
+    if ($person) {
+      form_set_value($form['eppn'], $person['edupersonprincipalname'], $form_state);
+      $_SESSION[$sesskey]['eppn'] = $form_state['values']['eppn'] = $person['edupersonprincipalname'];
+    }
+    else {
+      form_set_error('eppn', 'EPPN required');
+    }
+  }
+  else {
+    if ($person and $form_state['values']['eppn'] != $person['edupersonprincipalname']) {
+      form_set_error('eppn', "EPPN from form '{$form_state['values']['eppn']} does not match LDAP value '{$person['edupersonprincipalname']}'");
+    }
+    else {
+      $eppn = $form_state['values']['eppn'];
+      if ($existing = user_external_load($eppn)) {
+        // dpm('user exists?');
+        // dpm($existing);
+        form_set_error('eppn', 'looks like that eppn is in authmap already?');
+      }
+      elseif ($existing = array_shift(user_load_multiple(array(), array('name' => $eppn)))) {
+        // dpm('user exists?');
+        // dpm($existing);
+        form_set_error('eppn', 'looks like that eppn is in users already?');
+      }
+    }
+  }
+
+  if (empty($form_state['values']['email'])) {
+    if ($person) {
+      if (!empty($person['mail'])) {
+        form_set_value($form['email'], $person['mail'], $form_state);
+        $_SESSION[$sesskey]['email'] = $form_state['values']['email'] = $person['mail'];
+      }
+      else {
+        form_set_error('email', 'Email address required - LDAP record has no value');
+      }
+    }
+    else {
+      form_set_error('email', 'Email address required - LDAP data not accessible or not found');
+    }
+  }
+  if ($existing = array_shift(user_load_multiple(array(), array('mail' => $form_state['values']['email'])))) {
+    // dpm('email in use ?');
+    // dpm($existing);
+    form_set_error('email', 'looks like that email is in users already?');
+  }
+  // dpm('sesskey is ' . $sesskey);
+  // dpm($_SESSION[$sesskey]);
+
+}
+
+/**
+ * Process submitted admin SAML account creation form.
+ */
+function ctsi_saml_register_form_submit($form, &$form_state) {
+
+  $langcode = LANGUAGE_NONE;
+  $module = 'simplesamlphp_auth';
+
+  // simulate this
+  // user_external_login_register($authname, 'simplesamlphp_auth');
+  // we can't use that function directly because it updates the global $user if successful
+
+  if (empty($form_state['values']['eppn'])) {
+    user_error("No EPPN value for new SAML account");
+    return false;
+  }
+  $eppn = $form_state['values']['eppn'];
+
+  if (empty($form_state['values']['email'])) {
+    user_error("No email value for new SAML account");
+    return false;
+  }
+  $email = $form_state['values']['email'];
+
+  if ($existing = array_shift(user_load_multiple(array(), array('name' => $eppn)))) {
+    user_error("User '{$eppn}' already exists");
+    return false;
+  }
+
+  // Register this new user.
+  $userinfo = array(
+    'name' => $eppn,
+    'pass' => user_password(),
+    'mail' => $email,
+    'init' => $eppn,
+    'status' => 1,
+    'access' => REQUEST_TIME,
+  );
+
+  $realname = '';
+  if (!empty($form_state['values']['first_name'])) {
+    $userinfo['field_first_name'][$langcode][0]['value'] = $form_state['values']['first_name'];
+    $realname .= $form_state['values']['first_name'];
+  }
+  if (!empty($form_state['values']['last_name'])) {
+    $userinfo['field_last_name'][$langcode][0]['value'] = $form_state['values']['last_name'];
+    $realname .= ' ' . $form_state['values']['last_name'];
+  }
+
+  if ($account = user_save(drupal_anonymous_user(), $userinfo)) {
+    watchdog('user', 'New external user: %name using module simplesamlphp_auth.', array('%name' => $eppn), WATCHDOG_NOTICE, l(t('edit'), 'user/' . $account->uid . '/edit'));
+    // dpm('created new account for ' . $eppn);
+    // dpm($account);
+  }
+  else {
+    // Terminate if an error occurred during user_save().
+    user_error("Error creating SAML account for {$eppn}.");
+    return false;
+  }
+  user_set_authmaps($account, array("authname_$module" => $eppn));
+
+  if (!empty($account->uid)) {
+    // Populate roles based on configuration setting.
+    if ($samlhacks = variable_get('simplesamlphp_auth_rolepopulation', '')) {
+      $roles = array();
+      foreach (explode('|', $samlhacks) as $hack) {
+        list($id, $condition) = explode(':', $hack);
+        if ($condition == 'groups,=,realm-ucsf.edu') {
+          $roles[$id] = true;
+        }
+      }
+      if ($roles) {
+        $userinfo = array('roles' => $roles);
+        $account = user_save($account, $userinfo);
+      }
+    }
+
+    if ($realname = trim($realname) and module_exists('realname')) {
+      pathauto_user_update_alias($account, 'update');
+    }
+
+    drupal_set_message("Created new SAML account {$account->name}");
+    $form_state['redirect'] = 'admin/people';
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ctsi_saml_theme() {
+  $return = array();
+
+  $return['ctsi_saml_email_form'] = array(
+    'render element' => 'form',
+    'template' => 'ctsi-saml-email-form',
+  );
+
+  return $return;
+}
+
+/**
+ * Implements hook_user_update().
+ */
+function ctsi_saml_user_update(&$edit, $account, $category) {
+  // dpm(array('edit'=>$edit, 'account'=>$account,'category'=>$category), __FUNCTION__);
+  // why are all these access modules such cobbles?
+  // simplesamlphp_auth does a direct SQL UPDATE of the users record to set the email address,
+  // without doing any validation that it is unique. developer seems to regard this as a feature -
+  // https://drupal.org/node/1280930#comment-5087716
+  // so we have to do it after the fact, if we want to
+  $prevent_myaccess_dups = false;
+
+  if ($prevent_myaccess_dups and $account->uid and $category == 'account' and count($edit) == 1 and isset($edit['roles']) and strpos($account->init, '@ucsf.edu')) {
+    // PROBABLY we are being called on an account that the saml module has just created,
+    //  after it updates the roles with that ridiculousness.
+    // dpm(__FUNCTION__ . ' op is ' . $op);
+    // dpm(array('account'=>$account, 'edit'=>$edit));
+    $sql = <<<EOQ
+select other.uid, other.name, other.mail
+from authmap a, users other
+where a.uid = :uid
+and a.module = 'simplesamlphp_auth'
+and other.mail = :mail
+and a.uid != other.uid
+EOQ;
+    if ($other = db_query($sql, array(':uid' => $account->uid, ':mail' => $account->mail))->fetch()) {
+      watchdog('ctsi_saml', 'Duplicate email address %email', array('%email' => $account->mail), WATCHDOG_CRITICAL);
+      drupal_set_message(t('Duplicate email address %email', array('%email' => $account->mail)), 'error');
+    }
+    else {
+      // dpm('no duplicate mail found');
+      // dpm(array('uid'=>$account->uid, 'mail'=>$account->mail, 'query'=>sprintf($sql, $account->uid, $account->mail)));
+    }
+  }
+}
+
+/**
+ * Implements hook_user_insert().
+ */
+function ctsi_saml_user_insert(&$edit, $account, $category) {
+  // dpm(array('edit'=>$edit, 'account'=>$account,'category'=>$category), __FUNCTION__);
+  ctsi_saml_user_duplicate_mail($edit, $account, $category);
+}
+
+/**
+ * Implements hook_user_presave().
+ */
+function ctsi_saml_user_presave(&$edit, $account, $category) {
+  // dpm(array('edit'=>$edit, 'account'=>$account,'category'=>$category), __FUNCTION__);
+  ctsi_saml_user_duplicate_mail($edit, $account, $category);
+}
+
+/**
+ * Called by various user hooks to test for duplicate email use.
+ */
+function ctsi_saml_user_duplicate_mail(&$edit, $account, $category) {
+  // dpm(array('edit'=>$edit, 'account'=>$account,'category'=>$category), __FUNCTION__);
+  if (!isset($account->uid)) {
+    dpm($account, "no UID in supposed account object");
+    $bt = debug_backtrace();
+    dpm($bt);
+    return false;
+  }
+
+  if ($account->uid) {
+    $email = isset($edit['mail']) ? $edit['mail'] : (isset($account->mail) ? $account->mail : '');
+    if ($email) {
+      $isdup = false;
+      if ($dups = ctsi_saml_check_duplicate_email($account->uid, $email)) {
+        $isdup = true;
+        if (true or empty($account->is_duplicate_email)) {
+          if (empty($dups[$account->uid])) {
+            $dups[$account->uid] = (object) array_merge((array) $account, $edit);
+          }
+          ctsi_saml_alert_duplicate_email($email, $dups);
+        }
+      }
+      $account->is_duplicate_email = $isdup;
+      $edit['is_duplicate_email'] = $isdup;
+    }
+  }
+}
+
+/**
+ * Query the users table for other accounts using a given email.
+ */
+function ctsi_saml_check_duplicate_email($uid, $email) {
+  $found = array();
+  $dups = false;
+  if ($result = db_query('select * from {users} where mail = :mail', array(':mail'=>$email))) {
+    foreach ($result as $row) {
+      if ($row->uid != $uid) {
+        $dups = true;
+      }
+      $found[$row->uid] = $row;
+    }
+  }
+  if (empty($email)) {
+    // dpm("what you do to me why? empty email tch");
+    return false;
+  }
+  if (empty($uid)) {
+    // dpm("what you do to me why? empty uid tch");
+    return false;
+  }
+  if ($dups) {
+    return $found;
+  }
+  return false;
+}
+
+/**
+ * Send out an email alert to site admin about duplicate email use.
+ */
+function ctsi_saml_alert_duplicate_email($email, $dups) {
+  global $user;
+  // dpm(array('email'=>$email, 'dups'=>$dups), __FUNCTION__);
+
+  watchdog('ctsi_saml', 'Duplicate accounts found for email address %email', array('%email' => $email), WATCHDOG_CRITICAL);
+
+  $root = user_load(1);
+  $language = user_preferred_language($root);
+  $module = 'ctsi_saml';
+  $key = 'ctsi-saml-dupmails';
+  // drupal_mail($module, $key, $to, $language, $params = array(), $from = NULL, $send = TRUE)
+  $to = $root->mail;
+  $params = array(
+    'subject' => 'Duplicate accounts found for email ' . $email,
+  );
+  $body = array();
+  $body[] = "Duplicate user accounts found for email address '{$email}' on " . date('r') . "\n";
+  $body[] = "\n";
+  foreach ($dups as $row) {
+    $name = "User #{$row->uid} - {$row->name}";
+    if (is_string($row->data)) {
+      $data = unserialize($row->data);
+    }
+    elseif (is_array($row->data)) {
+      $data = $row->data;
+    }
+    else {
+      dpm($row, 'what the hey is data here?');
+      $data = array();
+    }
+    foreach (array('field_first_name', 'field_last_name') as $f) {
+      if (isset($data[$f])) {
+        if (is_string($data[$f])) {
+          $name .= ' ' . $data[$f];
+        }
+        elseif (isset($data[$f]['und'][0]['value'])) {
+          $name .= ' ' . $data[$f]['und'][0]['value'];
+        }
+        else {
+          $name .= ' ' . var_export($data[$f], true);
+        }
+      }
+    }
+    $body[] = $name . "\n";
+    $body[] = url('user/' . $row->uid, array('absolute' => true)) . "\n";
+    $body[] = "\n";
+  }
+  $params['body'] = $body;
+  drupal_mail($module, $key, $to, $language, $params);
+}
+
+/**
+ * Implements hook_mail().
+ *
+ *  This is so stupid.
+ */
+function ctsi_saml_mail($key, &$message, $params) {
+  if ($key == 'ctsi-saml-dupmails') {
+    foreach ($params as $k => $v) {
+      $message[$k] = $v;
+    }
+  }
+}
+
+/**
+ * Implements hook_cron().
+ *
+ * Capture logins from watchdog table.
+ */
+function ctsi_saml_cron() {
+  global $base_path;
+
+  // capture SAML logins from watchdog
+  $sql = <<<EOQ
+select w.*, u.name, u.mail, r.realname
+from watchdog w
+  left join users u using (uid)
+  left join realname r using (uid)
+where w.message like :message
+  and w.type = :type
+  and w.wid not in (select wid from ctsi_saml_log)
+EOQ;
+  $message_pattern = 'Load user %';
+  $type = 'simplesamlphp';
+
+  // | wid | uid | type | message | severity | link | location | referer | hostname | timestamp | variables | name | mail | realname |
+  $rows = array();
+  if ($result = db_query($sql, array(':message' => $message_pattern, ':type' => $type))) {
+    foreach ($result as $row) {
+      $rows[$row->wid] = $row;
+    }
+  }
+
+  $count = 0;
+  foreach ($rows as $wid => $row) {
+    $row->destination = '';
+    if (!empty($row->location)) {
+      $parts = parse_url($row->location);
+      if (isset($parts['query'])) {
+        $vars = array();
+        parse_str($parts['query'], $vars);
+        foreach ($vars as $k => $v) {
+          if ($k == 'ReturnTo') {
+            $kparts = parse_url($v);
+            if (isset($kparts['path'])) {
+              $row->destination = $kparts['path'];
+              if (strpos($row->destination, $base_path) === 0) {
+                $row->destination = substr($row->destination, strlen($base_path));
+              }
+            }
+          }
+          elseif ($k == 'destination') {
+            $row->destination = $v;
+          }
+        }
+      }
+    }
+    drupal_write_record('ctsi_saml_log', $row);
+    ++$count;
+  }
+  drupal_set_message('Wrote ' . $count . ' ' . format_plural($count, 'row', 'rows') . ' to CTSI SAML log table');
+}
+
+
+/**
+ * Test form values to match existing SAML accounts
+ */
+function ctsi_saml_match_authmap($form_state) {
+  if (!empty($form_state['values']['name'])) {
+    $id = $form_state['values']['name'];
+    if (stripos($id, 'SF') === 0 and $value = substr($id, 2) and strlen($value) == 6 and is_numeric($value)) {
+      // they entered their MyAccess username #eyeroll
+      $id = $value . '@ucsf.edu';
+    }
+    if ($row = db_query('select * from authmap join users using (uid) where :match in (name,mail)', array(':match'=>$id))->fetch()) {
+      if ($row->module == 'simplesamlphp_auth') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *  for user_pass - "Request new password"
+ */
+function ctsi_saml_form_user_pass_alter(&$form, &$form_state) {
+  $form['#validate'][] = 'ctsi_saml_form_user_pass_validate';
+}
+
+/**
+ * Validate user password request form to stop confused SAML users.
+ */
+function ctsi_saml_form_user_pass_validate(&$form, &$form_state) {
+
+  if (ctsi_saml_match_authmap($form_state)) {
+    $path = '/goto/login/saml' . (isset($_GET['destination']) ? '/' . $_GET['destination'] : '');
+    form_set_error('saml', 'You need to use <a href="' . $path . '">MyAccess</a> to log in to this account. To change your MyAccess username or password, see <a href="https://myaccess.ucsf.edu/myaccount/forgotPassword">MyAccess Credential Management</a>.');
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ *  for user_login
+ */
+function ctsi_saml_form_user_login_alter(&$form, &$form_state) {
+  $form['#validate'][] = 'ctsi_saml_form_user_login_validate';
+}
+/**
+ * Validate user login form to stop confused SAML users.
+ */
+function ctsi_saml_form_user_login_validate(&$form, &$form_state) {
+
+  if (ctsi_saml_match_authmap($form_state)) {
+    $path = '/goto/login/saml' . (isset($_GET['destination']) ? '/' . $_GET['destination'] : '');
+    form_set_error('saml', 'Use <a href="' . $path . '">MyAccess</a> to log in to this account.');
+  }
+
+}

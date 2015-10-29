@@ -1,0 +1,26 @@
+diff --git a/expiration/rate_expiration.module b/expiration/rate_expiration.module
+index ff9b16e..89f0f1a 100644
+--- a/expiration/rate_expiration.module
++++ b/expiration/rate_expiration.module
+@@ -204,8 +204,8 @@ function rate_expiration_node_insert($node) {
+     $container = 'rate_expiration_' . $widget->name;
+     $begin = "{$container}_begin";
+     $end = "{$container}_end";
+-    $begin = $node->$begin ? (int) strtotime($node->$begin . 'Z') - $timezone : 0;
+-    $end = $node->$end ? (int) strtotime($node->$end . 'Z') - $timezone : 0;
++    $begin = !empty($node->$begin) ? (int) strtotime($node->$begin . 'Z') - $timezone : 0;
++    $end = !empty($node->$end) ? (int) strtotime($node->$end . 'Z') - $timezone : 0;
+ 
+     // Correct empty dates which are not 0 cause of timezone handling.
+     $begin = $begin <= 86400 ? 0 : $begin;
+@@ -239,8 +239,8 @@ function rate_expiration_node_update($node) {
+     $container = 'rate_expiration_' . $widget->name;
+     $begin = "{$container}_begin";
+     $end = "{$container}_end";
+-    $begin = $node->$begin ? (int) strtotime($node->$begin . 'Z') - $timezone : 0;
+-    $end = $node->$end ? (int) strtotime($node->$end . 'Z') - $timezone : 0;
++    $begin = !empty($node->$begin) ? (int) strtotime($node->$begin . 'Z') - $timezone : 0;
++    $end = !empty($node->$end) ? (int) strtotime($node->$end . 'Z') - $timezone : 0;
+ 
+     // Correct empty dates which are not 0 cause of timezone handling.
+     $begin = $begin <= 86400 ? 0 : $begin;

@@ -1,0 +1,1941 @@
+<?php
+function fe_taxonomy_vocabulary_load($name) {
+  return taxonomy_vocabulary_load($name);
+}
+
+/**
+ * @file
+ * CTSI custom module for providing special theming options and functionality
+ *  to the CTSI Accelerate and Open Proposals sites.
+ */
+
+/**
+ * Implements hook_init().
+ *
+ * Restrict access to certain IPs. 
+ * @todo Turn this all into a Context reaction plugin.
+ */
+function ctsi_init() {
+  // do we care?
+  if (variable_get('ctsi_ip_tests', 0)) {
+    // we care about something. if not you.
+    ctsi_ip_check();
+  }
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ctsi_menu() {
+
+  $items = array();
+
+  // Login redirect
+  $items['goto/login'] = array(
+    'title' => 'Log In',
+    'page callback' => 'ctsi_login_redirect',
+    'type' => MENU_CALLBACK,
+    'access callback' => true,
+  );
+
+  // Notifications redirect
+  $items['goto/subscribe'] = array(
+    'title' => 'Subscribe',
+    'page callback' => 'ctsi_sublink_redirect',
+    'type' => MENU_CALLBACK,
+    'access callback' => true,
+  );
+
+  $items['admin/config/ctsi/general'] = array(
+    'title' => 'CTSI Administration',
+    'description' => 'CTSI admin settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ctsi_ip_form'),
+    'access arguments' => array('administer CTSI subnets'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['admin/config/ctsi/general/subnets'] = array(
+    'title' => 'CTSI Subnets',
+    'description' => 'CTSI IP-based restrictions',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+
+  $items['admin/people/merge'] = array(
+    'title' => t('Merge users'),
+    'description' => t('Merge accounts with the same email address'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('ctsi_dupuser_form'),
+    'access arguments' => array('administer users'),
+    'file' => 'ctsi.admin.inc',
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+
+function drupal_nogo($where) {
+  drupal_set_message("disabled redirect call to {$where}", 'error');
+  return false;
+}
+
+/**
+ * Implements hook_drupal_goto_alter().
+ *
+ *  Always log out to http
+ */
+function ctsi_drupal_goto_alter(&$path, &$options, &$http_response_code) {
+  if (empty($path) and user_is_anonymous()) {
+    $options['https'] = FALSE;
+  }
+}
+
+/**
+ * Match current path to a pattern
+ * - largely stolen from block_list()
+ * - map comment form paths to associated content paths
+ *
+ * @param $pattern
+ *   The pattern to match to the current path. A list of paths
+ *   separated by \n, \r or \r\n, using '*' as a wildcard character:
+ *    *renewal* - matches any path containing "renewal"
+ *    renewal*  - matches any path beginning with "renewal"
+ *    *renewal  - matches any path ending in "renewal"
+ *    renewal   - matches the path "renewal"
+ *
+ * @return
+ *   Boolean value: TRUE if there is a match; otherwise FALSE
+ */
+function ctsi_match_pattern($pattern, $test_path = NULL) {
+  $pattern = (string) $pattern;
+  if ($test_path === NULL) {
+    $qpath = $_GET['q'];
+    $path = drupal_get_path_alias($_GET['q']);
+  }
+  else {
+    $qpath = $path = $test_path;
+  }
+  // Compare with the internal and path alias (if any).
+  if (drupal_match_path($path, $pattern)) {
+    return TRUE;
+  }
+  if ($path != $qpath) {
+    if (drupal_match_path($qpath, $pattern)) {
+      return TRUE;
+    }
+  }
+  if (strpos($qpath, 'comment/reply/') === 0) {
+    $arg = explode('/', $qpath);
+    if (isset($arg[2]) and is_numeric($arg[2])) {
+      $nodepath = drupal_get_path_alias('node/' . $arg[2]);
+      if (drupal_match_path($nodepath, $pattern)) {
+        return TRUE;
+      }
+    }
+  }
+  return FALSE;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function ctsi_permission() {
+  return array(
+    'administer CTSI subnets' => array(
+      'title' => t('administer CTSI subnets'),
+      'description' => t('Configure IP restriction settings'),
+    ),
+  );
+}
+
+/**
+ * Convert a list of IP ranges to subnet blocks (CIDRs)
+ *
+ * Example: (192.168.100.0, 192.168.103.255) becomes 192.168.100.0/22 
+ *
+ * @param array $subnets
+ *  A list of pairs of dotted IP addresses
+ *
+ * @return
+ *  A string containing newline-separated CIDRs
+ */
+function ctsi_ip_subnets_to_cidrs($subnets) {
+  $cidrs = '';
+  foreach ($subnets as $range) {
+    list($min, $max) = $range;
+    $min_ip = long2ip($min);
+    if ($max > $min) {
+      $diff = 32 - strlen(decbin($max -$min));
+      $cidrs .= preg_replace('/\.0\.0$/', '.0', $min_ip) . '/' . $diff . "\n";
+    }
+    else {
+      $cidrs .= $min_ip . "\n";
+    }
+  }
+  return $cidrs;
+}
+
+/**
+ * Admin form for configuring CTSI IP restricted paths and allowed IPs
+ */
+function ctsi_ip_form($form, &$form_state) {
+  $subnets = variable_get('ctsi_ip_subnets', array());
+  $cidrs = ctsi_ip_subnets_to_cidrs($subnets);
+  $form = array();
+  $form['paths'] = array(
+    '#type' => 'textarea',
+    '#rows' => 5,
+    '#cols' => 40,
+    '#title' => 'Restrict paths that match',
+    '#default_value' => variable_get('ctsi_ip_paths', ''),
+    '#description' => "Enter one page per line as Drupal paths. The '*' character is a wildcard. Example paths are blog for the blog page and blog/* for every personal blog. <front> is the front page.",
+  );
+  $form['cidrs'] = array(
+    '#type' => 'textarea',
+    '#title' => 'To these subnets',
+    '#default_value' => $cidrs,
+    '#rows' => 10,
+    '#cols' => 40,
+    '#description' => 'Enter each subnet on a separate line. Use CIDR format (eg 192.168.2.0/24) or single IPs. Ranges entered as <i>IP/mask</i> (eg 192.68.2.0/255.255.255.0) will be accepted and converted to CIDRs.<br/>(Your current IP address is ' . ip_address() . ').',
+  );
+  $form['redirect'] = array(
+    '#type' => 'textfield',
+    '#title' => 'Redirect unauthorized users to',
+    '#default_value' => variable_get('ctsi_ip_redirect', ''),
+    '#description' => 'if blank, users will get an "Access Denied" error',
+  );
+
+  $bypass_roles = (array)variable_get('ctsi_ip_bypass_roles', array());
+  foreach (user_roles() as $role) {
+    $role_options[$role] = $role;
+  }
+  $form['bypass_roles'] = array(
+    '#type' => 'checkboxes',
+    '#options' => $role_options,
+    '#title' => 'Allow these roles to bypass IP restrictions',
+    '#default_value' => $bypass_roles,
+  );
+
+  $form['debug'] = array(
+    '#type' => 'checkbox',
+    '#title' => 'Display debugging info',
+    '#default_value' => variable_get('ctsi_ip_debug', 0),
+  );
+  $form['hallpass'] = array(
+    '#type' => 'checkbox',
+    '#title' => 'Temporarily allow my IP',
+    '#default_value' => (!empty($_SESSION['ctsi_ip_hallpass'])),
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+  );
+  return $form;
+}
+
+/**
+ * Convert a list of subnet blocks (CIDRs) to IP ranges.
+ * Used in validating CTSI subnets admin form.
+ *
+ * Example: 192.168.100.0/22 becomes (192.168.100.0, 192.168.103.255) 
+ *
+ * @param string $cidr_string
+ *  A string containing whitespace-separated CIDRs
+ *
+ * @return
+ *  A list of pairs of dotted IP addresses, or FALSE on error.
+ */
+function ctsi_cidrs_to_subnets($cidr_string) {
+  $subnets = $sortnets = $maxes = $mins = array();
+  $cidrs = preg_split('/[\s]/', $cidr_string, -1, PREG_SPLIT_NO_EMPTY);
+  $form_error = false;
+  foreach ($cidrs as $cidr) {
+    if (empty($cidr)) {
+      continue;
+    }
+    $parts = explode('/', $cidr);
+    $base = array_shift($parts);
+    $base .= str_repeat('.0', 3 - substr_count($base, '.'));
+    if (long2ip(ip2long($base)) != $base) {
+      form_set_error($cidr, "{$cidr}: invalid IP {$base}");
+      $form_error = true;
+    }
+    $min = ip2long($base);
+    $part2 = array_shift($parts);
+    if (is_numeric($part2)) {
+      $max = $min;
+      if ($bitcount = (int) $part2) {
+        $max += pow(2, (32 -$bitcount)) - 1;
+      }
+    }
+    elseif (strpos($part2, '.')) {
+      if (substr($part2, 0, 3) == '255') {
+        $mask = ip2long($part2);
+        $max = ($min & $mask) | (~$mask);
+        $bitcount = strlen(decbin(~$mask));
+      }
+      else {
+        $max = ip2long($part2);
+        $bitcount = 32 - strlen(decbin($max -$min));
+      }
+    }
+    elseif ($part2) {
+      form_set_error($cidr, "{$cidr}: invalid bit count {$part2}");
+      $form_error = true;
+    }
+    else {
+      $bitcount = 0;
+      $max = $min;
+    }
+    if ($bitcount < 0 or $bitcount > 31) {
+      $s = "{$cidr}: invalid bit count {$bitcount} from {$part2}"
+        . "\n"
+        . sprintf("min: %u %s %s", $min, long2ip($min), decbin($min))
+        . "\n"
+        . sprintf("max: %u %s %s", $max, long2ip($max), decbin($max))
+        . "\n"
+      ;
+      form_set_error($cidr, $s);
+      $form_error = true;
+    }
+    if ($form_error) {
+      break;
+    }
+    if ($min < 0) {
+      $min = ($min & 0x7FFFFFFF) + 0x80000000;
+    }
+    if ($max < 0) {
+      $max = ($max & 0x7FFFFFFF) + 0x80000000;
+    }
+    $sortnets[] = array($min, $max);
+    $maxes[] = $max;
+    $mins[] = $min;
+  }
+  if ($form_error) {
+    return false;
+  }
+  array_multisort($maxes, SORT_NUMERIC, SORT_DESC, $mins, SORT_NUMERIC, SORT_DESC);
+  foreach (array_keys($maxes) as $i) {
+    $range = array($mins[$i], $maxes[$i]);
+    if (!in_array($range, $subnets)) {
+      $subnets[] = $range;
+    }
+  }
+  return $subnets;
+}
+
+/**
+ * Validate CTSI IP restriction admin form.
+ */
+function ctsi_ip_form_validate($form, &$form_state) {
+  if (!empty($form_state['values']['cidrs'])) {
+    ctsi_cidrs_to_subnets($form_state['values']['cidrs']);
+  }
+}
+
+/**
+ * Process submitted CTSI IP restriction admin form.
+ */
+function ctsi_ip_form_submit($form, &$form_state) {
+  // dpm(compact('form','form_state'), __FUNCTION__);
+
+  $do_tests = 1;
+
+  $subnets = variable_get('ctsi_ip_subnets', array());
+  if (empty($form_state['values']['cidrs'])) {
+    drupal_set_message(t('No subnets defined - all users will be allowed'));
+    $subnets = array();
+  }
+  else {
+    $newsubnets = ctsi_cidrs_to_subnets($form_state['values']['cidrs']);
+    if (is_array($newsubnets)) {
+      $subnets = $newsubnets;
+      $text = '';
+      foreach ($subnets as $range) {
+        $text .= sprintf("{$range[0]} -> {$range[1]} : %s -> %s\n", long2ip($range[0]), long2ip($range[1]));
+      }
+      drupal_set_message(t("Set subnets to:<pre>\n!subnets\n</pre>", array('!subnets' => $text)));
+    }
+    else {
+      drupal_set_message(t('Problem creating subnets array from CIDR list - result: !newsubnets', array('!newsubnets' => var_export($newsubnets, true))), 'error');
+      $form_state['redirect'] = false;
+    }
+  }
+  if (empty($subnets)) {
+    // really? but i guess, if we can't be bothered to defined IPs, we don't care.
+    $do_tests = 0;
+  }
+  variable_set('ctsi_ip_subnets', $subnets);
+
+  $paths = '';
+  if (empty($form_state['values']['paths'])) {
+    drupal_set_message(t('No paths will be restricted'));
+  }
+  else {
+    // trim blank lines
+    $pathlist = preg_split('/[\r\n]+/', $form_state['values']['paths'], -1, PREG_SPLIT_NO_EMPTY);
+    sort($pathlist);
+    $paths = implode("\n", array_unique($pathlist));
+    drupal_set_message(t('Restrict paths that match: <br/> <i>!paths</i>', array('!paths' => implode('<br/>', explode("\n", $paths)))));
+  }
+  if (empty($paths)) {
+    // nothing to look for, no reason to test
+    $do_tests = 0;
+  }
+  variable_set('ctsi_ip_paths', $paths);
+
+  $redirect = '';
+  if (empty($form_state['values']['redirect'])) {
+    drupal_set_message(t('On failure, display standard <i>Access Denied</i> message'));
+  }
+  else {
+    $redirect = $form_state['values']['redirect'];
+    drupal_set_message(t('On failure, redirect users to !redirect', array('!redirect' => l($redirect, $redirect))));
+  }
+  variable_set('ctsi_ip_redirect', $redirect);
+
+  $bypass_roles = array();
+  if (isset($form_state['values']['bypass_roles'])) {
+    foreach ((array)$form_state['values']['bypass_roles'] as $k => $v) {
+      if ($v and $k === $v) {
+        $bypass_roles[] = $v;
+      }
+    }
+  }
+  variable_set('ctsi_ip_bypass_roles', $bypass_roles);
+
+  $debug = 0;
+  if (isset($form_state['values']['debug'])) {
+    $debug = (int) $form_state['values']['debug'];
+  }
+  variable_set('ctsi_ip_debug', $debug);
+
+  $_SESSION['ctsi_ip_hallpass'] = !empty($form_state['values']['hallpass']);
+
+  variable_set('ctsi_ip_tests', $do_tests);
+  variable_set('ctsi_ip_settings_ts', REQUEST_TIME);
+
+  // for admins - force check again for what you just defined
+  unset($_SESSION['ctsi_ip_test_ts']);
+  unset($_SESSION['ctsi_ip_test_results']);
+  unset($_SESSION['ctsi_ip_bypass']);
+}
+
+/**
+ * Test for user roles and module implementations of ctsi_ip_bypass() hook
+ *  that will short-circuit IP address testing
+ */
+function ctsi_ip_bypass() {
+  global $user;
+  static $hooks = NULL;
+  static $bypass_roles = NULL;
+
+  if (!isset($_SESSION['ctsi_ip_bypass'][$user->uid])) {
+    $_SESSION['ctsi_ip_bypass'][$user->uid] = FALSE;
+    if ($bypass_roles === NULL) {
+      $bypass_roles = (array)variable_get('ctsi_ip_bypass_roles', array());
+    }
+    if (array_intersect($user->roles, (array)$bypass_roles)) {
+      $_SESSION['ctsi_ip_bypass'][$user->uid] = TRUE;
+    }
+    else {
+      if ($hooks === NULL) {
+        $hook = __FUNCTION__;
+        $hooks = array();
+        foreach (module_implements($hook) as $module) {
+          $hooks[$module] = $module . '_' . $hook;
+        }
+      }
+      foreach ($hooks as $module => $hook) {
+        if ($hook()) {
+          $_SESSION['ctsi_ip_bypass'][$user->uid] = TRUE;
+          break;
+        }
+      }
+    }
+    // dpm(array('bypass_roles'=>$bypass_roles, 'hooks'=>$hooks, '_SESSION'=>$_SESSION), __FUNCTION__ . ' newly set for ' . $user->uid);
+  }
+  else {
+    // dpm(array('bypass_roles'=>$bypass_roles, 'hooks'=>$hooks, '_SESSION'=>$_SESSION), __FUNCTION__ . ' already set in session for ' . $user->uid);
+  }
+
+  return $_SESSION['ctsi_ip_bypass'][$user->uid];
+}
+
+/**
+ * Test current user's path request and IP address to see if it is allowed.
+ *
+ * @param string $test_path
+ *  Optional explicit path to be tested. Default is $_GET[q].
+ * @return
+ *  NULL if no test performed, TRUE if test is passed, FALSE if test is failed.
+ */
+function ctsi_ip_check($test_path = NULL) {
+  global $user;
+
+  // pass or fail, Google should stay out of it
+  $element = array(
+    '#tag' => 'meta', 
+    '#attributes' => array(
+      'name' => 'robots', 
+      'content' => 'noarchive, nofollow, noimageindex, noindex, noodp, nosnippet, notranslate, noydir',
+    ),
+  );
+  drupal_add_html_head($element, 'ctsi_ip_fail');
+
+  if (!empty($_SESSION['ctsi_ip_hallpass'])) {
+    // temporary admin pass
+    return;
+  }
+  if (module_exists('simplesamlphp_auth') and isset($user->name) and ctsi_simplesaml_account($user->name)) {
+    // simpleSAML MyAccess free pass
+    return;
+  }
+  if (ctsi_ip_bypass()) {
+    return;
+  }
+
+  $debug = variable_get('ctsi_ip_debug', 0);
+
+  // do we know you?
+  if (isset($_SESSION['ctsi_ip_test_ts'])) {
+    // have we changed our minds?
+    if ($_SESSION['ctsi_ip_test_ts'] < variable_get('ctsi_ip_settings_ts', 0)) {
+      // forget about you
+      unset($_SESSION['ctsi_ip_test_ts']);
+      unset($_SESSION['ctsi_ip_test_results']);
+    }
+  }
+
+  $test_results = isset($_SESSION['ctsi_ip_test_results']) ?  $_SESSION['ctsi_ip_test_results'] : null;
+
+  // did you pass already?
+  if ($test_results > 0) {
+    // fine, go ahead
+    return;
+  }
+
+  $paths = variable_get('ctsi_ip_paths', '');
+
+  // are you asking for something we don't care about?
+  if (!ctsi_match_pattern($paths, $test_path)) {
+    // fine, go ahead
+    return;
+  }
+
+  // Drupal sez:
+  // "the use of REQUEST_URI is prone to XSS exploits and does not work on IIS; use request_uri() instead"
+  // so ok.
+  if ($test_path === NULL) {
+    $request_uri = request_uri();
+  }
+  else {
+    $request_uri = $test_path;
+  }
+  $ip_address = ip_address();
+
+  // did you fail already?
+  if ($test_results < 0) {
+    // sorry, fail
+    if ($debug) {
+      drupal_set_message("{$ip_address} could not access <a href='{$request_uri}'>{$request_uri}</a>", 'info');
+    }
+    return ctsi_ip_fail($test_path);
+  }
+
+  $subnets = variable_get('ctsi_ip_subnets', array());
+
+  if (empty($subnets) or !is_array($subnets)) {
+    // this shouldn't happen, but if it does - free pass
+    // because otherwise an empty array will cause failure
+    // and a not-an-array will cause fatal errors.
+    // so log this, it's a problem.
+    $tests = variable_get('ctsi_ip_tests', 0);
+    watchdog('subnets'
+      , 'tests is !tests - test was attempted but subnets is empty or not an array: !subnets'
+      , array(
+      '!tests' => var_export($tests, true),
+      '!subnets' => var_export($subnets, true),
+    )
+      , WATCHDOG_ERROR
+    );
+    // stop checking until this gets fixed
+    variable_set('ctsi_ip_tests', 0);
+    // move along
+    return ctsi_ip_pass($test_path);
+  }
+
+  // are you not allowed to see?
+  $ip_denied = true;
+  if ($debug) {
+    $rebug = '';
+    $then = REQUEST_TIME;
+    $times = array();
+    $now = REQUEST_TIME;
+    $times['before everything'] = $now - $then;
+    $then = $now;
+  }
+  if ($userip = ip2long($ip_address)) {
+    // fix for unsigned ints
+    $userip = $userip > 0 ? $userip : ($userip & 0x7FFFFFFF) + 0x80000000;
+
+    if ($debug) {
+      $ipuser = long2ip($userip);
+      if ($ipuser != $ip_address) {
+        watchdog('subnets'
+          , 'IP->int problem: !remote => !int => !ip'
+          , array(
+          '!remote' => $ip_address,
+          '!int' => $userip,
+          '!ip' => $ipuser,
+        )
+          , WATCHDOG_ERROR
+        );
+        // when in doubt, let them through? i guess
+        return;
+      }
+    }
+
+    $top = current($subnets);
+    $bot = end($subnets);
+    if ($debug) {
+      $now = REQUEST_TIME;
+      $times['after current end'] = $now - $then;
+      $then = $now;
+    }
+    if ($userip > $top[1]) {
+      if ($debug) {
+        $maxip = long2ip($top[1]);
+        $rebug .= "{$ip_address} > {$maxip} and there's nothing bigger\n";
+      }
+    }
+    elseif ($userip < $bot[0]) {
+      if ($debug) {
+        $minip = long2ip($bot[0]);
+        $rebug .= "{$ip_address} < {$minip} and there's nothing smaller\n";
+      }
+    }
+    else {
+      foreach ($subnets as $range) {
+        if ($userip >= $range[0] and $userip <= $range[1]) {
+          $ip_denied = false;
+          break;
+        }
+        if ($debug) {
+          $minip = long2ip($range[0]);
+          $maxip = long2ip($range[1]);
+          $rebug .= "{$ip_address} outside range {$minip} -> {$maxip}\n";
+        }
+      }
+    }
+    if ($debug) {
+      $now = REQUEST_TIME;
+      $times['after range check'] = $now - $then;
+      $then = $now;
+    }
+  }
+  else {
+    watchdog('subnets'
+      , 'IP->int problem: !remote => !int'
+      , array(
+      '!remote' => $ip_address,
+      '!int' => var_export($userip, true),
+    )
+      , WATCHDOG_ERROR
+    );
+    // when in doubt, let them through? i guess
+    return;
+  }
+  if ($ip_denied) {
+    if ($debug) {
+      $now = REQUEST_TIME;
+      $times['after testing'] = $now - $then;
+      $then = $now;
+    }
+    watchdog('subnets'
+      , 'Access denied to !uri for !ip (!host) (!int) (matches !paths)'
+      , array(
+      '!uri' => $request_uri,
+      '!ip' => $ip_address,
+      '!host' => gethostbyaddr($ip_address),
+      '!int' => $userip,
+      '!paths' => $paths,
+    )
+      , WATCHDOG_NOTICE
+    );
+    if ($debug) {
+      $now = REQUEST_TIME;
+      $times['after watchdog'] = $now - $then;
+      $then = $now;
+      drupal_set_message("could not access <a href='{$request_uri}'>{$request_uri}</a>", 'info');
+      drupal_set_message("<pre>{$rebug}\n{$ip_address} not found in subnets, oosp\n</pre>", 'info');
+      drupal_set_message("timing: " . print_r($times, true), 'info');
+    }
+
+    // you fail
+    return ctsi_ip_fail($test_path);
+  }
+
+  if ($debug) {
+    drupal_set_message("<pre>{$rebug}\n{$ip_address} found in subnets, hooray\n</pre>", 'info');
+  }
+  // you pass
+  return ctsi_ip_pass($test_path);
+
+}
+
+/**
+ * Store successful IP test results in PHP session.
+ */
+function ctsi_ip_pass($test_path = NULL) {
+
+  if ($test_path !== NULL) {
+    // don't track this
+    return TRUE;
+  }
+
+  // remember your success
+  $_SESSION['ctsi_ip_test_results'] = 1;
+  $_SESSION['ctsi_ip_test_ts'] = REQUEST_TIME;
+  return true;
+}
+
+/**
+ * Store IP test failure in PHP session.
+ */
+function ctsi_ip_fail($test_path = NULL) {
+  static $redirect = null;
+
+  if ($test_path !== NULL) {
+    // don't track this
+    return FALSE;
+  }
+
+  // remember your failure
+  $_SESSION['ctsi_ip_test_results'] = -1;
+  $_SESSION['ctsi_ip_test_ts'] = REQUEST_TIME;
+
+  $options = array();
+  if ($redirect === null) {
+    $redirect = variable_get('ctsi_ip_redirect', '');
+  }
+  if ($redirect) {
+    if (!empty($_GET['q']) and !drupal_is_front_page()) {
+      $here = drupal_get_path_alias($_GET['q']);
+      $query = $_GET;
+      unset($query['q']);
+      if ($query) {
+        $here .= '?' . drupal_http_build_query($query);
+      }
+      $options['query']['destination'] = $here;
+      // dpm("adding destination {$query['destination']} to path {$redirect}");
+    }
+    return drupal_goto($redirect, $options);
+  }
+  drupal_access_denied();
+  exit;
+}
+
+/**
+ * Add a flag to a node object to tell the theme layer to hide the Edit tab.
+ * Used by forums where anonymous users can edit "their" nodes
+ *
+ * @param $node
+ *  The node object to alter (no need to pass by reference, objects are all references)
+ *
+ */
+function ctsi_hide_edit_tab($node) {
+  global $user;
+  if (empty($user->uid) and empty($node->uid) and empty($_SESSION['myideas'][$node->nid])) {
+    $node->hide_edit_tab = true;
+  }
+}
+
+/**
+ * Implements hook_node_update_index().
+ */
+function ctsi_node_update_index($node) {
+  ctsi_purge_body_tags($node);
+}
+
+/**
+ * Implements hook_node_search_result().
+ */
+function ctsi_node_search_result($node) {
+  ctsi_purge_body_tags($node);
+}
+
+/**
+ * Implements hook_node_view().
+ *
+ * - Remove stuff from the node body before use by search.
+ * - Set up Subscriptions sub/unsub links
+ */
+function ctsi_node_view($node, $view_mode = 'full') {
+  global $user;
+
+  switch ($view_mode) {
+    case 'search_index':
+    case 'search_result':
+      ctsi_purge_body_tags($node);
+      break;
+  }
+
+  $links = array();
+  if (module_exists('subscriptions_content')) {
+    ctsi_node_sublinks($links, $node);
+  }
+
+  if ($links) {
+    $node->content['links']['ctsi'] = array(
+      '#theme' => 'links__node__ctsi',
+      '#links' => $links,
+      '#attributes' => array('class' => array('links', 'inline')),
+    );
+  }
+
+  // dpm($node->content['links']);
+}
+
+/**
+ * Add Subscriptions related links to an array.
+ *  Used by hook_node_view()
+ */
+function ctsi_node_sublinks(&$links, $node) {
+  global $user;
+
+  if (function_exists('subscriptions_content_type_is_blocked')
+    and $blocked = subscriptions_content_type_is_blocked($node->type)
+  ) {
+    return;
+  }
+
+  $statics = variable_get('subscriptions_static_content_types', array());
+  $unlisteds = variable_get('subscriptions_unlisted_content_types', array());
+
+  $destination = ctsi_destination();
+
+  if (empty($user->uid)) {
+
+    if (empty($statics[$node->type])) {
+      $title = t('Subscribe to this page');
+      $href = 'goto/subscribe/add/node/' . $node->nid;
+      $links['subscriptions_node_nid_' . $node->nid] = array(
+        'title' => $title,
+        'href' => $href,
+        'html' => true,
+        'query' => array('destination' => $destination),
+      );
+      // dpm("adding destination {$destination} to path {$href}");
+    }
+
+    if (empty($unlisteds[$node->type])) {
+      $type_name = node_type_get_name($node->type);
+      $title = t('Subscribe to %type content', array('%type' => $type_name));
+      $href = 'goto/subscribe/add/type/' . $node->type;
+      $links['subscriptions_node_type_' . $node->type] = array(
+        'title' => $title,
+        'href' => $href,
+        'html' => true,
+        'query' => array('destination' => $destination),
+      );
+      // dpm("adding destination {$destination} to path {$href}");
+    }
+
+  }
+  else {
+    // node subs
+    // subscriptions_get_subscription($user->uid, 'node', 'nid', $nid);
+    // node type subs
+    // subscriptions_get_subscription($user->uid, 'node', 'type', $type);
+    $show_node_info = variable_get('node_submitted_' . $node->type, 1);
+    $show_by_author = variable_get('subscriptions_show_by_author_options', 1);
+    $node_options = module_invoke_all('subscriptions', 'node_options', $user, $node);
+
+    if (user_access('subscribe to all content types', $user)) {
+      // we will need to remove some things.
+      if (!empty($statics[$node->type])) {
+        unset($node_options['nid']);
+      }
+      if (!empty($unlisteds[$node->type])) {
+        unset($node_options['type']);
+      }
+    }
+
+    foreach ($node_options as $subtype => $sublinks) {
+      foreach ($sublinks as $i => $subinfo) {
+        if (!is_array($subinfo)) continue;
+        $title = $subinfo['name'];
+        if (strpos($title, 'To') === 0) {
+          $title = 'Subscribe ' . $title;
+        }
+        $op = 'add';
+        $author_uid = isset($subinfo['params']['author_uid']) ? $subinfo['params']['author_uid'] : -1;
+        if (subscriptions_get_subscription($user->uid, $subinfo['params']['module'], $subinfo['params']['field'], $subinfo['params']['value'], $author_uid)) {
+          $op = 'del';
+          $title = str_replace('Subscribe To', 'Unsubscribe From', $title);
+          $title = str_replace('Subscribe to', 'Unsubscribe from', $title);
+        }
+        elseif ((!$show_node_info || !$show_by_author) && $author_uid >= 0) {
+          // do not show those by-author links, nuh uh
+          //  see subscriptions_ui.module
+          continue;
+        }
+        $href = 'subscriptions/' . $op . '/' . $subinfo['link'];
+        $key = 'subscriptions_' . implode('_', $subinfo['params']);
+        $links[$key] = array(
+          'title' => $title,
+          'href' => $href,
+          'html' => true,
+          'query' => array('destination' => $destination),
+        );
+        // dpm("adding destination {$destination} to path {$href}");
+        if (strpos($href, '?')) {
+          $parts = parse_url($href);
+          if (isset($parts['query']['destination']) and $parts['query']['destination'] == $destination) {
+            // dpm("removing destination {$destination} from path {$href}");
+            unset($links[$key]['query']);
+          }
+        }
+      }
+    }
+  }
+  // dpm($links);
+  // move customization to hook_ctsi_node_sublinks_alter
+  //  or hook_ctsi_node_sublinks_my_content_type_alter
+  $hook = 'ctsi_node_sublinks';
+  $types = array($hook);
+  $types[] = $hook . '_' . $node->type;
+  drupal_alter($types, $links, $node);
+}
+
+/**
+ * Remove certain HTML tags - STYLE, for now - from node body.
+ *
+ * Used primarily to avoid putting CSS into the search index.
+ *
+ * @param object $node
+ *  The node object to be altered.
+ */
+function ctsi_purge_body_tags($node) {
+  if (empty($node->body)) {
+    return;
+  }
+  foreach ($node->body as $language => $items) {
+    foreach ($items as $i => $item) {
+      foreach ($item as $k => $v) {
+        $m = array();
+        $changes = array();
+        if (preg_match_all('#<style.*?style>#is', $v, $m)) {
+          foreach ($m[0] as $s) {
+            $changes[] = $s;
+          }
+        }
+        if ($changes) {
+          $node->body[$language][$i][$k] = str_replace($changes, '', $v);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Statically store the internal path of the site home page
+ */
+function ctsi_front() {
+  static $front = null;
+  if ($front === null) {
+    $front = drupal_get_normal_path(variable_get('site_frontpage', 'node'));
+  }
+  return $front;
+}
+
+/**
+ * Generate a destination value that
+ *  - DOES go to the alias, not the system URL
+ *  - DOES NOT go to node/199, woy.
+ *
+ * @todo This relies on a core patch to properly deal with an empty string in $_GET[destination].
+ */
+function ctsi_destination() {
+  $destination = '';
+  if (isset($_REQUEST['destination']) and $_REQUEST['destination'] != ctsi_front()) {
+    $destination = $_REQUEST['destination'];
+  }
+  else {
+    if (!empty($_GET['q']) and !drupal_is_front_page()) {
+      $destination = drupal_get_path_alias($_GET['q']);
+    }
+    $query = $_GET;
+    unset($query['q']);
+    if ($query) {
+      if (isset($query['destination'])) {
+        // dpm("adding destination {$query['destination']} to path {$destination}");
+      }
+      $destination .= '?' . drupal_http_build_query($query);
+    }
+  }
+  // dpm("returning destination {$destination}");
+  return $destination;
+}
+
+function ctsi_qdest($destination) {
+  if (!empty($_GET['q']) and !drupal_is_front_page()) {
+    $path = drupal_get_path_alias($_GET['q']);
+    if ($path != $destination) {
+        // dpm("adding destination {$destination} to path {$path}");
+      $destination = $path . '?destination=' . $destination;
+    }
+    else {
+      // dpm("path {$path} == destination {$destination} - do not add");
+    }
+  }
+  return $destination;
+}
+
+function ctsi_unparse_url($parts) {
+  $scheme   = isset($parts['scheme']) ? $parts['scheme'] . '://' : '';
+  $host     = isset($parts['host']) ? $parts['host'] : '';
+  $port     = isset($parts['port']) ? ':' . $parts['port'] : '';
+  $user     = isset($parts['user']) ? $parts['user'] : '';
+  $pass     = isset($parts['pass']) ? ':' . $parts['pass']  : '';
+  $pass     = ($user || $pass) ? "$pass@" : '';
+  $path     = isset($parts['path']) ? $parts['path'] : '';
+  $query    = isset($parts['query']) ? '?' . $parts['query'] : '';
+  $fragment = isset($parts['fragment']) ? '#' . $parts['fragment'] : '';
+  return "$scheme$user$pass$host$port$path$query$fragment";
+}
+
+/**
+ * Return the simpleSAML login link
+ */
+function ctsi_simplesaml_url($destination = null, $absolute = false) {
+  if ($destination === null) {
+    $destination = ctsi_destination();
+  }
+  $options = array('absolute' => true);
+  $parts = parse_url($destination);
+  $target = url($destination, $options);
+  $absolute = (bool) $absolute;
+  $url = url('ctsi_saml_login', array('absolute' => $absolute, 'query' => array('ReturnTo' => $target)));
+  // dpm(compact('destination','target','url'), __FUNCTION__);
+  return $url;
+}
+
+/**
+ * Static list of simpleSAML lookup results.
+ */
+function ctsi_simplesaml_account($name = NULL) {
+  static $results = array();
+  if (empty($name)) {
+    return false;
+  }
+  if (!isset($results[$name])) {
+    if ($authmaps = user_get_authmaps($name)) {
+      $results[$name] = isset($authmaps['simplesamlphp_auth']);
+    }
+    else {
+      $results[$name] = false;
+    }
+  }
+  return $results[$name];
+}
+
+/**
+ * Convert several possible formats to a UCSF EPPN string.
+ *
+ * @param string $id
+ *  The ID to be converted.
+ * @return
+ *  An EPPN-format string (NNNNNN@ucsf.edu) or FALSE.
+ */
+function ctsi_make_eppn($id) {
+  $result = false;
+  $m = array();
+  if (preg_match('/^[\d]{6}@ucsf.edu/i', $id)) {
+    // it IS an EPPN. tabun.
+    $result = $id;
+  }
+  elseif (preg_match('/^02([\d]{6})[\d]/', $id, $m)) {
+    // employee ID
+    $result = $m[1] . '@ucsf.edu';
+  }
+  elseif (preg_match('/^SF([\d]{6})/i', $id, $m)) {
+    // MyAccess login ID
+    $result = $m[1] . '@ucsf.edu';
+  }
+  elseif (is_numeric($id) and $p = $id - 2569307 and preg_match('/^2([\d]{6})/', $p, $m)) {
+    // old-school UCSF Profiles PersonID
+    $result = $m[1] . '@ucsf.edu';
+  }
+  return $result;
+}
+
+/**
+ * Generate an array of MyAccess and Drupal login links
+ *
+ * @param string $destination
+ *  Optional destination
+ * @param string $logintype
+ *  Optionally specify type of login link, 'drupal' or 'myaccess'
+ * @param string $linktext
+ *  Optional. Specify link text. 
+ * @param array $options
+ *  Optional array of l() options.
+ *
+ * @return
+ *  An array of links (A tags) keyed by type ('drupal' and/or 'myaccess')
+ *
+ * @todo This function is deprecated. Use the ctsi_login_type values.
+ */
+function ctsi_login_destination_links($destination = null, $logintype = null, $linktext = null, $linkoptions = array()) {
+  $output = array();
+  if ($destination === null) {
+    $destination = ctsi_destination();
+  }
+  if (!is_array($linkoptions)) {
+    watchdog('ctsi', 'invalid linkoptions parameter: !linkoptions', array('!linkoptions' => var_export($linkoptions, true)), WATCHDOG_ERROR);
+    $linkoptions = array();
+  }
+  if ($logintype != 'myaccess') {
+    $title = $linktext ? $linktext : 'non-UCSF';
+    $options = array('query' => array('destination' => $destination)) + $linkoptions;
+    $output['drupal'] = l($title, 'user', $options);
+        // dpm("adding destination {$destination} to path 'user'");
+  }
+
+  if ($logintype != 'drupal') {
+    $title = $linktext ? $linktext : 'UCSF';
+    $myaccess_login_url = ctsi_simplesaml_url($destination);
+    // $output['myaccess'] = '<a href="' . $myaccess_login_url . '">' . $title . '</a>';
+    $options = array('external' => TRUE) + $linkoptions;
+    $output['myaccess'] = l($title, $myaccess_login_url, $options);
+  }
+
+  return $output;
+}
+
+/**
+ * Variant on theme_links() - instead of creating an unordered list,
+ * returns a keyed array of what would be the content of the LI tags.
+ * Used in node template files to get at specific node links in
+ * particular places.
+ */
+function ctsi_linklist_build($links) {
+  $linklist = array();
+  if (is_array($links)) {
+    foreach ($links as $key => $link) {
+      $output = '';
+      // following code horked from theme.inc theme_links()
+      if (isset($link['href'])) {
+        // Pass in $link as $options, they share the same keys.
+        $output = l($link['title'], $link['href'], $link);
+      }
+      else if (!empty($link['title'])) {
+        // Some links are actually not links, but we wrap these in <span> for adding title and class attributes
+        if (empty($link['html'])) {
+          $link['title'] = check_plain($link['title']);
+        }
+        $span_attributes = '';
+        if (isset($link['attributes'])) {
+          $span_attributes = drupal_attributes($link['attributes']);
+        }
+        $output = '<span' . $span_attributes . '>' . $link['title'] . '</span>';
+      }
+      $linklist[$key] = $output;
+    }
+  }
+  return $linklist;
+}
+
+/**
+ * works like drupal_render() - print and remove items from a linklist variable
+ */
+function ctsi_linklist_render(&$linklist, $key) {
+  $output = '';
+  if (isset($linklist[$key])) {
+    $output .= $linklist[$key];
+    unset($linklist[$key]);
+  }
+  return $output;
+}
+
+/**
+ * Print out any remaining entries in $linklist
+ * as an unordered list a la theme_links()
+ */
+function ctsi_linklist_print($linklist) {
+  $output = '';
+  if ($linklist) {
+    $output = '<ul class="links">' . "\n";
+    $max = count($linklist) - 1;
+    foreach (array_keys($linklist) as $i => $key) {
+      $class = $key;
+      if ($i == 0) {
+        $class .= ' first';
+      }
+      if ($i == $max) {
+        $class .= ' last';
+      }
+      $output .= '  <li class="' . $class . '">' . $linklist[$key] . "</li>\n";
+    }
+    $output .= "</ul>\n";
+  }
+  return $output;
+}
+
+/**
+ * Build a path for redirects based on supplied arguments
+ *  or previous location, including query arguments.
+ *
+ * @param array $args
+ *  (optional) Destination path arguments
+ * @param string $exclude
+ *  (optional) A path to exclude (eg present location)
+ * @return
+ *  A destination path
+ */
+function ctsi_redirect_location(array $args = array(), $exclude = NULL) {
+  if (empty($args)) {
+    $destination = ctsi_destination();
+    if ($exclude and strpos($destination, $exclude) !== false) {
+      if (!empty($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], $exclude) === false) {
+        $destination = $_SERVER['HTTP_REFERER'];
+      }
+      else {
+        $destination = '';
+      }
+    }
+  }
+  else {
+    $destination = implode('/', $args);
+  }
+  if ($parts = parse_url($destination)) {
+    if (isset($parts['host']) and $parts['host'] == $_SERVER['HTTP_HOST']) {
+      $destination = isset($parts['path']) ? ltrim($parts['path'], '/') : '';
+      $q = array();
+      if (isset($parts['query'])) {
+        parse_str($parts['query'], $q);
+        if (isset($q['destination'])) {
+          $destination = $q['destination'];
+        }
+      }
+      if ($destination == ctsi_front()) {
+        $destination = '';
+      }
+      $query = $q;
+      unset($q['destination']);
+      if ($q) {
+        $destination .= '?' . drupal_http_build_query($q);
+      }
+    }
+  }
+  // dpm("return redirect destination {$destination}");
+  return $destination;
+}
+
+/**
+ * Redirect users to a login form and then on to a destination
+ */
+function ctsi_login_redirect() {
+  global $user;
+  global $base_url;
+
+  $args = func_get_args();
+  // dpm(compact('args', 'user') + array('_REQUEST'=>$_REQUEST, '_SERVER'=>$_SERVER), __FUNCTION__);
+
+  // $login_type = count($args) ? strtolower(array_shift($args)) : 'none';
+  // i cannot recreate this error and i need to
+  if (count($args)) {
+  $login_type = strtolower(array_shift($args));
+  }
+  else {
+    echo 'something very wrong in ', __FUNCTION__, "<pre>\n";
+    print_r($args);
+    $bt = debug_backtrace();
+    foreach ($bt as $i => $e) {
+      echo "bt[{$i}]\n"; var_dump($e);
+      if ($i > 3) break;
+    }
+    exit;
+  }
+  switch ($login_type) {
+    case 'drupal':
+    case 'saml':
+    case 'vpn':
+      break;
+    default:
+      if ($login_type) {
+        array_unshift($args, $login_type);
+      }
+      $login_type = 'saml';
+  }
+  $destination = ctsi_redirect_location($args, 'goto/login');
+  if ($login_type == 'vpn') {
+    $hp = parse_url($base_url);
+    $vpn_url = 'https://vpn.ucsf.edu/' . $destination . '/,DanaInfo=' . $hp['host'];
+    header("Location: {$vpn_url}");
+    exit;
+  }
+  // hack to accommodate drupal_goto()
+  // - otherwise it sends people straight to their Final Destination
+  unset($_GET['destination']);
+  if ($user->uid) {
+    drupal_set_message("You are already logged in.");
+    return drupal_goto($destination);
+  }
+  if ($login_type == 'drupal') {
+        // dpm("adding destination {$destination} to path 'user/login'");
+    return drupal_goto('user/login', array('query' => array('destination' => $destination)));
+  }
+  $target = url($destination, array('absolute' => true));
+  return drupal_goto('ctsi_saml_login', array('query' => array('ReturnTo' => $target)));
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function ctsi_menu_alter(&$items) {
+  // Disable the default /node front page.
+  if (ctsi_front() != 'node') {
+  $items['node'] = array(
+    'title' => 'Home',
+    'page callback' => 'ctsi_go_home',
+    'type' => MENU_CALLBACK,
+    'access callback' => true,
+  );
+  }
+}
+
+/**
+ * Do a permanent drupal_goto() to the home page of the site.
+ * Mainly used to stop robots and such from linking to /node.
+ * @see ctsi_menu_alter()
+ */
+function ctsi_go_home() {
+  return drupal_goto('', array(), 301);
+}
+
+/**
+ * Store a static list of usernames
+ * so we don't have to run the same query N times
+ */
+function ctsi_username($what) {
+  static $names = null;
+
+  if ($names === null) {
+    $names = array(0 => variable_get('anonymous', t('Anonymous')));
+  }
+  if (is_numeric($what)) {
+    if (isset($names[$what])) {
+      return $names[$what];
+    }
+    else {
+      if ($row = db_query('SELECT uid, name FROM {users} WHERE uid = :uid', array(':uid' => $what))->fetch()) {
+        $names[$what] = ctsi_username_link($row);
+        return $names[$what];
+      }
+    }
+  }
+  elseif (is_object($what) and isset($what->uid)) {
+    if (!isset($names[$what->uid])) {
+      $names[$what->uid] = ctsi_username_link($what);
+    }
+    return $names[$what->uid];
+  }
+  elseif (is_array($what)) {
+    // To return a single user object, wrap "user_load_multiple" with "array_shift" or equivalent.
+    // Example: array_shift(user_load_multiple(array(), $what))
+    if ($account = array_shift(user_load_multiple(array(), $what))) {
+      if (!isset($names[$account->uid])) {
+        $names[$account->uid] = ctsi_username_link($account);
+      }
+      return $names[$account->uid];
+    }
+  }
+  return 'Unknown ' . var_export($what, true);
+}
+
+/**
+ * Modify output of theme(username) to add link to homepage if found
+ *  Call CTSI Profiles function if available
+ */
+function ctsi_username_link($object) {
+  if (function_exists('ctsi_profiles_homepage')) {
+    ctsi_profiles_homepage($object);
+  }
+  $tname = theme('username', array('account' => $object));
+  if (!empty($object->homepage) and strpos($tname, '<a') === FALSE) {
+    $tname = l($tname, $object->homepage);
+  }
+  return $tname;
+}
+
+
+/**
+ * Format "Last revised by" line for a node
+ *  when there seems to actually be a revision
+ * - some nodes have a revision timestamp just slightly
+ *    greater than the created timestamp, ignore them
+ * - just going by timestamps to avoid doing a count(*) query
+ *    on the node_revisions table for every node, because oy.
+ */
+function ctsi_revised($node) {
+  if (isset($node->revision_timestamp) and $node->revision_timestamp > $node->created + 10) {
+    return t('Last revised by !a on @b.', array('!a' => ctsi_username($node->revision_uid), '@b' => format_date($node->revision_timestamp)));
+  }
+  return '';
+}
+
+/**
+ * Helper function for features - get the name of the feature's eponymous context, if any.
+ *
+ * @param $feature
+ *  The name of the feature module
+ */
+function ctsi_feature_context_name($feature) {
+  $contexts = &drupal_static(__FUNCTION__);
+
+  $context_hook = 'context_default_contexts';
+
+  if (!isset($contexts)) {
+    features_include_defaults('context');
+    $modules = module_implements($context_hook);
+    foreach ($modules as $module) {
+      $contexts[$module] = false;
+    }
+  }
+  if (isset($contexts[$feature])) {
+    if ($contexts[$feature] === false) {
+      $function = $feature . '_' . $context_hook;
+      if ($export = $function() and is_array($export)) {
+        $contexts[$feature] = key($export);
+      }
+      else {
+        $contexts[$feature] = '';
+      }
+    }
+    return $contexts[$feature];
+  }
+  return false;
+}
+
+/**
+ * Helper function for features - load and set the feature's eponymous context, if any.
+ *
+ * @param $feature
+ *  The name of the feature module
+ */
+function ctsi_feature_context_set($feature) {
+  if ($context = ctsi_feature_context_name($feature)) {
+    context_set('context', $context, context_load($context));
+  }
+}
+
+/**
+ * Helper function for features - check for the feature's eponymous context, if any.
+ *
+ * @param $feature
+ *  The name of the feature module
+ */
+function ctsi_feature_context_isset($feature) {
+  if ($context = ctsi_feature_context_name($feature)) {
+    return context_isset('context', $context);
+  }
+}
+
+/**
+ * Check to see if current user has the admin role or not
+ */
+function ctsi_is_admin() {
+  global $user;
+  global $is_admin;
+  static $dome = true;
+
+  if ($dome) {
+    $is_admin = $dome = false;
+    if ($rid = variable_get('user_admin_role', 0)) {
+      $is_admin = isset($user->roles[$rid]);
+    }
+  }
+  return $is_admin;
+}
+
+/**
+ * Implements hook_features_pipe_COMPONENT_alter().
+ *
+ * Add standard variables to nodes
+ * Many of them get added anyway, but many do not,
+ * especially for newfangled modules
+ *
+ * @param array &$pipe
+ *   By reference. The pipe array of further processors that should be called.
+ * @param array $data
+ *   An array of machine names for the component in question to be exported.
+ * @param array $export
+ *   An array of all components to be exported with a given feature.
+ *
+ */
+function ctsi_features_pipe_node_alter(&$pipe, $data, $export) {
+  // this is handled by someone
+  // 'node_options_',
+  $prefixes = array(
+    'comment' => array(
+      'comment_',
+      'comment_anonymous_',
+      'comment_default_mode_',
+      'comment_default_per_page_',
+      'comment_form_location_',
+      'comment_preview_',
+      'comment_subject_field_',
+    ),
+    'diff' => array(
+      'diff_enable_revisions_page_',
+      'diff_show_preview_changes_node_',
+      'diff_view_mode_preview_node_',
+    ),
+    'menu' => array(
+      'menu_options_',
+      'menu_parent_',
+    ),
+    'node' => array(
+      'node_preview_',
+      'node_submitted_',
+    ),
+    'auto_nodetitle' => array(
+      'ant_',
+      'ant_php_',
+      'ant_pattern_',
+    ),
+    'nodeblock' => array(
+      'nodeblock_',
+      'nodeblock_comment_link_',
+      'nodeblock_node_link_',
+      'nodeblock_node_overrides_',
+      'nodeblock_view_mode_',
+    ),
+    'subscriptions_content' => array(
+      'subscriptions_workflow_',
+      'subscriptions_default_workflow_',
+    ),
+  );
+  foreach ($data as $type) {
+    // it doesn't pick this up on its own, apparently
+    foreach ($prefixes as $module => $ps) {
+      if (module_exists($module)) {
+        foreach ($ps as $p) {
+          $pipe['variable'][] = $p . $type;
+        }
+      }
+    }
+    // more complexer
+    if (module_exists('pathauto')) {
+      $pipe['variable'][] = 'pathauto_node_' . $type . '_pattern';
+    }
+    if (module_exists('honeypot')) {
+      $pipe['variable'][] = 'honeypot_form_' . $type . '_node_form';
+      $pipe['variable'][] = 'honeypot_form_comment_node_' . $type . '_form';
+    }
+
+    // permissions
+    if (module_exists('view_unpublished')) {
+      $pipe['user_permission'][] = 'view any unpublished ' . $type .' content';
+    }
+
+  }
+}
+
+/**
+ * Implements hook_form_BASE_FORM_ID_alter().
+ * Undo bad choices of comment module
+ *  https://drupal.org/node/2140251
+ */
+function ctsi_form_node_form_alter(&$form, $form_state) {
+    $form['comment_settings']['comment'][COMMENT_NODE_HIDDEN]['#access'] = TRUE;
+    $form['comment_settings']['comment'][COMMENT_NODE_CLOSED]['#description'] = t('Users cannot post comments, but existing comments will be displayed.');
+}
+
+/**
+ * Implements hook_environment().
+ */
+function ctsi_environment() {
+  return array(
+    'staging' => array(
+      'label' => t('Staging'),
+      'allowed' => array(
+        'default' => FALSE,
+      ),
+    ),
+  );
+}
+
+/**
+ * Utility function called by implementations of hook_environment_switch().
+ */
+function ctsi_environment_change($target_env, $current_env, $modlist = null) {
+
+  $modules = array(
+    'production' => array(
+      'enable' => array(
+        'kissinsights',
+        'googleanalytics',
+      ),
+      'disable' => array(
+        'reroute_email',
+      ),
+    ),
+    'staging' => array(
+      'enable' => array(
+        'kissinsights',
+        'googleanalytics',
+        'reroute_email',
+        'stage_file_proxy',
+      ),
+    ),
+    'development' => array(
+      'enable' => array(
+        'field_tools_taxonomy',
+        'field_tools',
+        'reroute_email',
+        'stage_file_proxy',
+      ),
+      'disable' => array(
+        'kissinsights',
+        'googleanalytics',
+      ),
+    ),
+  );
+
+  if (is_array($modlist)) {
+    // replace top-level groups entirely
+    $modules = $modlist + $modules;
+  }
+
+  if ($sitemods = variable_get('ctsi_environment_modules', null)) {
+    foreach ((array) $sitemods as $e => $s) {
+      foreach ((array) $s as $k => $v) {
+        // replace low-level groups entirely
+        $modules[$e][$k] = $v;
+      }
+    }
+  }
+
+  if (!empty($modules[$target_env])) {
+    drupal_set_message("Switching environment from '{$current_env}' to '{$target_env}'");
+    if (!empty($modules[$target_env]['enable'])) {
+      module_enable($modules[$target_env]['enable']);
+      drupal_set_message("Enabled {$target_env} modules");
+    }
+    if (!empty($modules[$target_env]['disable'])) {
+      module_disable($modules[$target_env]['disable']);
+      drupal_set_message("Disabled {$target_env} modules");
+    }
+  }
+
+  switch ($target_env) {
+    case 'development':
+    case 'staging':
+      // when the environment changes, turn on logging AND rerouting
+      $handlers = array();
+      if (module_exists('devel')) {
+        if ($mail_system = variable_get('mail_system', '')) {
+          $handlers[] = 'Outgoing mail is being handled by ' . var_export($mail_system, true);
+        }
+        else {
+          variable_set('mail_system', array('default-system' => 'DevelDebugMailLog'));
+          $handlers[] = 'Sending outgoing mail to watchdog log using ' . $mail_system;
+        }
+      }
+      if (module_exists('reroute_email')) {
+        if ($instead = variable_get('reroute_email_address', '')) {
+          $handlers[] = 'Rerouting outgoing mail to ' . $instead;
+        }
+        elseif ($sitemail = variable_get('site_mail', '')) {
+          variable_set('reroute_email_address', $sitemail);
+          $handlers[] = 'No defined reroute addresses - rerouting outgoing mail to site_mail: ' . $sitemail;
+        }
+        else {
+          user_error("This site has no value for site_mail, that's a problem.");
+          $hack = 'ctsi@ucsf.edu';
+          variable_set('reroute_email_address', $hack);
+          $handlers[] = 'No defined reroute addresses, no site_mail address - rerouting outgoing mail to ' . $hack;
+        }
+        variable_set('reroute_email_enable', 1);
+      }
+      if (empty($handlers)) {
+        user_error("No modules available to handle outgoing mail, that's a problem.");
+        $handlers[] = 'Rerouting outgoing mail to oblivion using bogus smtp_library setting';
+        variable_set('smtp_library', 'bogus.mail.inc');
+      }
+      foreach ($handlers as $handler) {
+        drupal_set_message($handler);
+      }
+      break;
+
+  }
+}
+
+/**
+ * Callback for menu item - typically, forum 'create' menu item.
+ *
+ * One link, two results:
+ *  - anonymous people see a blank page, where blocks may be hung if one is so inclined
+ *  - logged-in people are redirected to desired path (eg, node/add/op-generic)
+ *
+ * @param $path
+ *    Where to send authenticated users
+ * @param $pauseall
+ *    Flag to *not* do the redirect. (For development it can be useful to stop all users here.)
+ *    Defaults to FALSE
+ *
+ */
+function ctsi_pause_anon($path, $pauseall = false) {
+  global $user;
+
+  $url = $query = null;
+  $output = '';
+
+  if ($user->uid) {
+    // $query = drupal_query_string_encode($_GET, array('q'));
+    $query = $_GET;
+    unset($query['q']);
+    if ($qpos = strpos($path, '?')) {
+      $pathquerystring = substr($path, $qpos + 1);
+      $path = substr($path, 0, $qpos);
+      parse_str($pathquerystring, $query);
+    }
+    // hack to accommodate drupal_goto()
+    // - otherwise it sends people straight to their Final Destination
+    unset($_GET['destination']);
+    if (isset($query['destination']) and $query['destination'] == $path) {
+      // dpm("remove destination {$destination} from path {$path}");
+    }
+
+    if (!$pauseall and empty($_REQUEST['pause']) and !variable_get('ctsi_create_page_stop_' . str_replace('-', '_', basename($path)), 0)) {
+      return drupal_goto($path, array('query' => $query));
+    }
+
+    // normally this never gets executed because of the goto
+    $url = url($path, array('query' => $query, 'absolute' => true));
+    $output .= '<h4>You ARE logged in, so normally you would not see this.</h4><h4>Instead, you would be redirected to ' . l($url, $url) . '</h4>';
+  }
+
+  return $output;
+}
+
+/**
+ * Get Subscriptions form arguments from path.
+ *
+ */
+function ctsi_subs_args($path = null) {
+  if ($path === null) {
+    $path = $_GET['q'];
+  }
+  $subop = $subtype = $subarg = null;
+  $m = array();
+  if (preg_match('#(^|/)(subscriptions|subscribe)/(add|del)/([^/]+)/([^/]+)#', $path, $m)) {
+    $subop = $m[3];
+    $subtype = $m[4];
+    $subarg = $m[5];
+  }
+  else {
+    // dpm($path, __FUNCTION__ . ' no matchy');
+  }
+  return compact('subtype', 'subarg', 'subop');
+}
+
+/**
+ * Calculate login url(s) based on current path and destination.
+ *
+ * @param string $login_type
+ *  (Optional) The type of login - currently, 'drupal' or 'saml'
+ * @return
+ *  URL(s) that should send the user to the respective login
+ *  and then either back to where they are, or on to where
+ *  they were going. If the login type is given, return only
+ *  that URL. Otherwise, return a keyed array of all known types.
+ */
+function ctsi_get_login_url($login_type='all') {
+  $destination = ctsi_destination();
+  // if current page is not destination, create dest of "here?dest=ultimatedest"
+  $destination = ctsi_qdest($destination);
+  $urls = array();
+  if ($login_type != 'saml') {
+    $urls['drupal'] = url('user/login', array('query' => array('destination' => $destination)));
+        // dpm("adding destination {$destination} to path 'user/login'");
+    if ($login_type == 'drupal') {
+      return $urls['drupal'];
+    }
+  }
+  if ($login_type != 'drupal') {
+    $urls['saml'] = ctsi_simplesaml_url($destination);
+    if ($login_type == 'saml') {
+      return $urls['saml'];
+    }
+  }
+  return $urls;
+}
+
+/**
+ * Implements hook_ctsi_login_type_info().
+ */
+function ctsi_ctsi_login_type_info() {
+  $types = array();
+  $destination = ctsi_destination();
+  // if current page is not destination, create dest of "here?dest=ultimatedest"
+  $destination = ctsi_qdest($destination);
+  $types['drupal'] = new stdClass();
+  $types['drupal']->type = 'drupal';
+  $options = array();
+  if ($destination) {
+    $options['query']['destination'] = $destination;
+        // dpm("adding destination {$destination} to path 'user/login'");
+  }
+  $types['drupal']->path = 'user/login';
+  $types['drupal']->text = t('non-UCSF');
+  $types['drupal']->url = url($types['drupal']->path, $options);
+  $types['drupal']->link = l($types['drupal']->text, $types['drupal']->path, $options);
+  return $types;
+}
+
+/**
+ * Store and return CTSI login types.
+ */
+function ctsi_login_types($type = NULL) {
+  $types = &drupal_static(__FUNCTION__);
+  if (!isset($types)) {
+    $types = module_invoke_all('ctsi_login_type_info');
+  }
+  if (empty($type) or $type == 'all') {
+    return $types;
+  }
+  elseif (isset($types[$type])) {
+    return $types[$type];
+  }
+}
+function ctsi_login_type_load($type) {
+  return ctsi_login_types($type);
+}
+
+/**
+ * Redirect users to a subscribe form after logging in.
+ */
+function ctsi_sublink_redirect() {
+  global $user;
+
+  $args = func_get_args();
+
+  // this has to be an empty string, not NULL, or no page is built.
+  $output = '';
+
+  $url = $path = $query = null;
+  if ($user->uid) {
+    $path = 'subscriptions/' . implode('/', $args);
+    $query = $_GET;
+    unset($query['q']);
+    // hack to accommodate drupal_goto()
+    // - otherwise it sends people straight to their Final Destination
+    unset($_GET['destination']);
+    $options = array();
+    $parts = parse_url($path);
+    if (isset($parts['query'])) {
+      parse_str($parts['query'], $partquery);
+      $query = $partquery + $query;
+      unset($parts['query']);
+      $path = ctsi_unparse_url($parts);
+    }
+    if ($query) {
+      $options['query'] = $query;
+    }
+    // dpm(compact('path','options'), __FUNCTION__);
+    if (empty($_GET['pause'])) {
+      drupal_goto($path, $options);
+    }
+    else {
+      $output .= '<p>Normally you would be redirected to ';
+      $output .= l($path, $path, $options);
+      $output .= '</p>';
+    }
+  }
+  // normally, stop here.
+  return $output;
+
+  // debuggles
+  if ($user->uid) {
+    if ($path) {
+      $url = $path;
+      if ($query) {
+        $url .= '?' . drupal_http_build_query($query);
+      }
+      $output .= '<a href="' . base_path() . $url . '">' . $url . '</a>';
+    }
+    else {
+      $output .= '<p>no path defined</p>';
+    }
+  }
+  else {
+    $output .= '<p>anonymouse - no redirect attempted</p>';
+  }
+  $output .= "<pre>\n";
+  $output .= print_r($args, true);
+  $output .= print_r($_GET, true);
+  $output .= "</pre>\n";
+
+  return $output;
+}
+
+/**
+ * Utility function - return the first value for a field.
+ *
+ * @see field_get_items()
+ * @see field_view_value()
+ */
+function ctsi_field_first_value($entity_type, $entity, $field_name, $render=TRUE) {
+  if (empty($entity_type) or empty($entity) or empty($field_name)) {
+    user_error('Invalid field first value parameters', E_USER_WARNING);
+    dpm(compact('dome','entity_type','entity','field_name'), __FUNCTION__ . ' bad params');
+    return FALSE;
+  }
+  $output = '';
+  if ($items = field_get_items($entity_type, $entity, $field_name)) {
+    if ($item = array_shift($items)) {
+      if ($render) {
+        $value = field_view_value($entity_type, $entity, $field_name, $item);
+        $output = drupal_render($value);
+      }
+      else {
+        if (isset($item['value'])) {
+          $output = $item['value'];
+        }
+        else {
+          dpm(compact('item'), $entity_type . ':' . $field_name . ' - no render but no value key');
+          $output = current($item);
+        }
+      }
+    }
+  }
+  return $output;
+}
+
+/**
+ * Bamboo theme does effective boolean cast testing on regions
+ *    if ($page['due_north'])
+ *  But the region arrays are not necessarily empty
+ *  even when they have no visible content
+ *  Do better testing.
+ */
+function ctsi_region_empty($region) {
+  $empty = TRUE;
+  if ($region and is_array($region)) {
+    foreach (array_keys($region) as $k) {
+      if ($k[0] != '#' and $k != 'context') {
+        $empty = FALSE;
+        break;
+      }
+    }
+  }
+  return $empty;
+}
+

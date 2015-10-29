@@ -1,0 +1,319 @@
+<?php
+
+/**
+ * Implements hook_update_projects_alter().
+ *
+ * Remove OP modules from update status page.
+ */
+function op_deploy_update_projects_alter(&$projects) {
+  foreach (preg_grep('/^op_|^ctsi/', array_keys($projects)) as $module) {
+    // drupal_set_message("Remove {$module} from status list");
+    unset($projects[$module]);
+  }
+}
+
+/**
+ * Implements hook_features_pipe_COMPONENT_alter().
+ *
+ * Add custom variables for nodes
+ *
+ * @param array &$pipe
+ *   By reference. The pipe array of further processors that should be called.
+ * @param array $data
+ *   An array of machine names for the component in question to be exported.
+ * @param array $export
+ *   An array of all components to be exported with a given feature.
+ *
+ */
+function op_deploy_features_pipe_node_alter(&$pipe, $data, $export) {
+  $prefixes = array(
+    'op_deploy_op_terms_',
+  );
+  foreach ($data as $type) {
+    foreach ($prefixes as $prefix) {
+      $pipe['variable'][] = $prefix . $type;
+    }
+  }
+}
+
+/**
+ * Utility function to enable voting on a content type.
+ *
+ *  This would be run by a feature module install hook, typically.
+ *
+ *  With the Rate module, voting will not normally be disabled
+ *  at the content type level, only expired on invididual nodes.
+ *  
+ */
+function op_deploy_enable_voting($content_type, $widget_name = 'thumbs_up') {
+  $variable = 'rate_widgets';
+  $widgets = variable_get($variable, array());
+  foreach ($widgets as &$widget) {
+    if ($widget->name == $widget_name) {
+      if (!in_array($content_type, $widget->node_types)) {
+        $widget->node_types[] = $content_type;
+      }
+    }
+  }
+  variable_set($variable, $widgets);
+}
+
+/**
+ * Utility function to create aliases if not already set.
+ *
+ * @param array $aliases
+ *  An associative array of source-path => alias values
+ */
+function op_deploy_make_aliases(array $aliases) {
+  foreach ($aliases as $source => $alias) {
+    $current = drupal_lookup_path('alias', $source);
+    if ($current != $alias) {
+      path_save(compact('source', 'alias'));
+    }
+  }
+}
+
+/**
+ * Utility function to enable a list of features.
+ *
+ * Call this from an update_N() hook when ready to deploy.
+ *
+ * @param object $sandbox
+ *  I think it's an object? Some 7.x update hook thing.
+ * @param array $features
+ *  A list of feature names
+ */
+
+function op_deploy_setup_features(&$sandbox, $features) {
+  if (module_enable($features)) {
+    foreach ($features as $feature_name) {
+      features_revert_module($feature_name);
+      op_deploy_load_op_terms($feature_name);
+    }
+  }
+  else {
+    throw new DrupalUpdateException('Some problem with enabling these modules: ' . implode(', ', $features));
+  }
+  return t('Enabled new features: %list', array('%list' => implode(', ', $features)));
+}
+
+/**
+ * Read and write a variable for an OP feature module
+ *  containing taxonomy terms and defaults.
+ */
+function op_deploy_op_terms($feature_name, $vars = NULL) {
+  $variable_name = 'op_deploy_op_terms_' . $feature_name;
+  if ($vars) {
+    drupal_set_message("Updating {$variable_name}");
+    variable_set($variable_name, $vars);
+  }
+  else {
+    $vars = variable_get($variable_name, NULL);
+    if ($vars === NULL) {
+      drupal_set_message("No such variable (apparently) as {$variable_name} for {$feature_name}");
+      $vars = array();
+    }
+  }
+  if (empty($vars)) {
+    drupal_set_message("No terms found for {$variable_name}");
+  }
+  return $vars;
+}
+
+/**
+ * Utility to load taxonomy terms into vocabularies
+ */
+function op_deploy_load_op_terms($feature_name) {
+  $vars = op_deploy_op_terms($feature_name);
+  if (empty($vars)) {
+    $vars = op_deploy_get_initial_op_terms($feature_name);
+  }
+  if (empty($vars)) {
+    drupal_set_message("No terms found for feature {$feature_name}");
+    return;
+  }
+  foreach ($vars as $name => $setup) {
+    if (empty($setup['terms'])) {
+      drupal_set_message("No terms defined for {$name}");
+      continue;
+    }
+    $items = op_deploy_build_op_terms($setup['terms']);
+
+    if ($v = taxonomy_vocabulary_machine_name_load($name)) {
+      $tree = taxonomy_get_tree($v->vid);
+      if (empty($tree)) {
+        foreach ($items as $item) {
+          $term = (object)$item;
+          $term->vid = $v->vid;
+          taxonomy_term_save($term);
+          drupal_set_message("Created {$name} term '{$term->name}'");
+        }
+      }
+      else {
+        drupal_set_message("Terms exist for vocabulary {$name}");
+      }
+      if (!empty($setup['defaults'])) {
+        // for now we will set a variable with the default values
+        //  and apply them in a node form alter function
+        op_common_taxdef($name, $setup['defaults']);
+      }
+    }
+    else {
+      drupal_set_message("No vocabulary exists with name {$name}");
+    }
+  }
+}
+
+function op_deploy_get_initial_op_terms($feature_name) {
+  $initial_hook = $feature_name . '_initial_op_terms';
+  if (function_exists($initial_hook)) {
+    $vars = $initial_hook();
+  }
+  else {
+    watchdog('op_deploy', 'Initial terms hook does not exist: :hook', array(':hook'=> $initial_hook), WATCHDOG_ERROR);
+  }
+  if (empty($vars)) {
+    watchdog('op_deploy', 'Unable to get initial terms from hook: :hook', array(':hook'=> $initial_hook), WATCHDOG_ERROR);
+    return FALSE;
+  }
+  return $vars;
+}
+
+/**
+ * Utility function to construct an array of taxonomy terms from a list of words.
+ */
+function op_deploy_build_op_terms($words) {
+  $terms = array();
+
+  $empty = array(
+    'name' => '',
+    'weight' => '0',
+    'format' => 'user_wysiwyg',
+  );
+
+  // create terms
+  $weight = 0;
+  foreach ($words as $word) {
+    if (is_array($word)) {
+      $term = $word;
+      if (empty($term['format'])) {
+        $term['format'] = 'user_wysiwyg';
+      }
+    }
+    else {
+      $term = $empty;
+      $term['name'] = $word;
+      $term['weight'] = (string)($weight++);
+    }
+    $terms[] = $term;
+  }
+
+  return $terms;
+}
+
+function op_deploy_export_op_terms($feature_name) {
+  $names = array();
+
+  if ($feature = features_load_feature($feature_name)) {
+    if (!empty($feature->info['features']['taxonomy'])) {
+      $names = $feature->info['features']['taxonomy'];
+    }
+  }
+  else {
+    drupal_set_message("Could not load feature {$feature_name}");
+    return;
+  }
+
+  if (empty($names)) {
+    drupal_set_message("No taxonomy found for {$feature_name}");
+    return;
+  }
+
+  $items = array();
+  foreach ($names as $name) {
+    if ($v = taxonomy_vocabulary_machine_name_load($name)) {
+      if ($tree = taxonomy_get_tree($v->vid)) {
+        foreach ($tree as $term) {
+          $t = (array)$term;
+          unset($t['tid']);
+          unset($t['vid']);
+          // we don't import if terms exist anyway
+          unset($t['uuid']);
+          if ($t['format'] === NULL) {
+            $t['format'] = 'user_wysiwyg';
+          }
+          $items[$name]['terms'][] = $t;
+        }
+      }
+      else {
+        error_log("no tree for {$name} vid {$v->vid}");
+        error_log(var_export($v, true));
+      }
+      $items[$name]['defaults'] = op_common_taxdef($name);
+    }
+    else {
+      error_log("no vocabulary for name: {$name}");
+    }
+  }
+
+  op_deploy_op_terms($feature_name, $items);
+
+}
+
+function op_deploy_check_overrides($feature_name) {
+  if ($feature = features_load_feature($feature_name)) {
+    if (!module_exists($feature_name)) {
+      drupal_set_message('No such feature is enabled: ' . $feature_name);
+      return;
+    }
+  }
+  else {
+    drupal_set_message("Could not load feature {$feature_name}");
+    return;
+  }
+  module_load_include('inc', 'features', 'features.export');
+  $overrides = features_detect_overrides($feature);
+  if (empty($overrides)) {
+    drupal_set_message("{$feature_name} is in its default state. No overrides.");
+    return FALSE;
+  }
+  drupal_set_message("{$feature_name} is overridden - revert it.");
+  return TRUE;
+}
+
+/**
+ * Add a path to the site list of IP restricted paths
+ */
+function op_deploy_enable_ip_restriction($path) {
+  $pathstring = variable_get('ctsi_ip_paths', '');
+  $paths = preg_split('/[\r\n]+/', $pathstring, -1, PREG_SPLIT_NO_EMPTY);
+  if (!in_array($path, $paths, TRUE)) {
+    $paths[] = $path;
+  }
+  sort($paths);
+  variable_set('ctsi_ip_paths', implode("\n", array_unique($paths)));
+}
+
+/**
+ * Process modules
+ */
+function op_deploy_process_modules(&$sandbox, $modules, $disable_dependents = TRUE) {
+  $enable = $disable = $features = NULL;
+  extract($modules);
+  if ($disable) {
+    module_disable($disable, $disable_dependents);
+  }
+
+  if ($enable) {
+    if (module_enable($enable)) {
+      drupal_set_message(t('Enabled new modules: %list', array('%list' => implode(', ', $enable))));
+    }
+    else {
+      throw new DrupalUpdateException('Some problem with enabling these modules: ' . implode(', ', $enable));
+    }
+  }
+
+  if ($features) {
+    op_deploy_setup_features($sandbox, $features);
+  }
+}

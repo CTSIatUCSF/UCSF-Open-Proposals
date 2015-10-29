@@ -1,0 +1,35 @@
+diff --git a/includes/bootstrap.inc b/includes/bootstrap.inc
+index 104c86f..a72256d 100644
+--- a/includes/bootstrap.inc
++++ b/includes/bootstrap.inc
+@@ -1705,6 +1705,12 @@ function watchdog_exception($type, Exception $exception, $message = NULL, $varia
+ function watchdog($type, $message, $variables = array(), $severity = WATCHDOG_NOTICE, $link = NULL) {
+   global $user, $base_root;
+ 
++  // Ensure that $variables is in the correct format.
++  if (isset($variables) && !is_array($variables)) {
++    watchdog('system', 'Log message was generated with an incorrect variable list passed to the watchdog() function (must be an array or NULL). Message type: %type, message text: %message.', array('%type' => $type, '%message' => $message), WATCHDOG_ERROR);
++    return;
++  }
++
+   static $in_error_state = FALSE;
+ 
+   // It is possible that the error handling will itself trigger an error. In that case, we could
+diff --git a/modules/dblog/dblog.admin.inc b/modules/dblog/dblog.admin.inc
+index 7c1c0e2..76cd554 100644
+--- a/modules/dblog/dblog.admin.inc
++++ b/modules/dblog/dblog.admin.inc
+@@ -292,7 +292,12 @@ function theme_dblog_message($variables) {
+     }
+     // Message to translate with injected variables.
+     else {
+-      $output = t($event->message, unserialize($event->variables));
++      $u = unserialize($event->variables);
++      if (!is_array($u)) {
++        $event->message .= ' (bad event variables: ' . $event->variables . ')';
++        $u = array();
++      }
++      $output = t($event->message, $u);
+     }
+     if ($variables['link'] && isset($event->wid)) {
+       // Truncate message to 56 chars.

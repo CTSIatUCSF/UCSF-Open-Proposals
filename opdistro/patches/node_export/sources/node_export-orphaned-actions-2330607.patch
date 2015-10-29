@@ -1,0 +1,24 @@
+diff --git a/node_export.module b/node_export.module
+index 8bdadb9..75a8daa 100755
+--- a/node_export.module
++++ b/node_export.module
+@@ -257,7 +257,9 @@ function node_export_bulk_operation($nodes = NULL, $format = NULL, $delivery = N
+  */
+ function node_export_action_info() {
+   $actions = array();
+-  if (user_access('export nodes')) {
++  // this is causing bogus orphaned action errors
++  //  see https://www.drupal.org/node/2330607
++  // if (user_access('export nodes')) {
+     $selected_formats = variable_get('node_export_format', array('drupal'));
+     $format_handlers = node_export_format_handlers();
+     foreach ($format_handlers as $format_handler => $format) {
+@@ -281,7 +283,7 @@ function node_export_action_info() {
+         }
+       }
+     }
+-  }
++  // }
+   return $actions;
+ 
+ }

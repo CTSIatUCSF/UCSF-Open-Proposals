@@ -1,0 +1,25 @@
+diff --git a/admin_theme.module b/admin_theme.module
+old mode 100644
+new mode 100755
+index bac5987..1225018
+--- a/admin_theme.module
++++ b/admin_theme.module
+@@ -178,6 +178,18 @@ function admin_theme_custom_theme() {
+ }
+ 
+ /**
++* Implementation of hook_admin_paths_alter().
++*/
++function admin_theme_admin_paths_alter(&$paths) {
++  $disallow = variable_get('admin_theme_path_disallow', '');
++  if (trim($disallow) != '') {
++    foreach(explode('\n', $disallow) as $path) {
++      $paths[trim($path)] = FALSE;
++    }
++  }
++}
++
++/**
+  * Implementation of hook_admin_theme_info().
+  */
+ function admin_theme_admin_theme_info() {

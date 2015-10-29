@@ -1,0 +1,34 @@
+diff --git a/modules/comment/comment.module b/modules/comment/comment.module
+index 2972474..38d5e31 100644
+--- a/modules/comment/comment.module
++++ b/modules/comment/comment.module
+@@ -1223,14 +1223,12 @@ function comment_form_node_form_alter(&$form, $form_state) {
+      ),
+     '#weight' => 30,
+   );
+-  $comment_count = isset($node->nid) ? db_query('SELECT comment_count FROM {node_comment_statistics} WHERE nid = :nid', array(':nid' => $node->nid))->fetchField() : 0;
+-  $comment_settings = ($node->comment == COMMENT_NODE_HIDDEN && empty($comment_count)) ? COMMENT_NODE_CLOSED : $node->comment;
+   $form['comment_settings']['comment'] = array(
+     '#type' => 'radios',
+     '#title' => t('Comments'),
+     '#title_display' => 'invisible',
+     '#parents' => array('comment'),
+-    '#default_value' => $comment_settings,
++    '#default_value' => isset($node->comment) ? $node->comment : variable_get('comment_' . $node->type, COMMENT_NODE_OPEN),
+     '#options' => array(
+       COMMENT_NODE_OPEN => t('Open'),
+       COMMENT_NODE_CLOSED => t('Closed'),
+@@ -1246,13 +1244,6 @@ function comment_form_node_form_alter(&$form, $form_state) {
+       '#description' => t('Comments are hidden from view.'),
+     ),
+   );
+-  // If the node doesn't have any comments, the "hidden" option makes no
+-  // sense, so don't even bother presenting it to the user.
+-  if (empty($comment_count)) {
+-    $form['comment_settings']['comment'][COMMENT_NODE_HIDDEN]['#access'] = FALSE;
+-    // Also adjust the description of the "closed" option.
+-    $form['comment_settings']['comment'][COMMENT_NODE_CLOSED]['#description'] = t('Users cannot post comments.');
+-  }
+ }
+ 
+ /**

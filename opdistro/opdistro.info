@@ -1,0 +1,191 @@
+; Packaging information for opdistro
+name = "opdistro"
+description = ""
+exclusive = "1"
+core = "7.x"
+; ----------
+; Dependencies
+; ----------
+; Access control
+dependencies[] = content_access
+; Administration
+dependencies[] = admin_menu
+dependencies[] = admin_theme
+dependencies[] = admin_views
+dependencies[] = adminrole
+dependencies[] = filter_perms
+dependencies[] = module_filter
+; CTSI
+dependencies[] = ctsi
+dependencies[] = ctsi_context
+dependencies[] = ctsi_ldap
+dependencies[] = ctsi_profiles
+; Chaos tool suite
+dependencies[] = ctools
+; Context
+dependencies[] = context
+dependencies[] = context_disable_context
+dependencies[] = context_layouts
+dependencies[] = context_og
+dependencies[] = context_respect
+dependencies[] = context_ui
+; Core
+dependencies[] = block
+dependencies[] = comment
+dependencies[] = contact
+dependencies[] = contextual
+dependencies[] = dblog
+dependencies[] = field
+dependencies[] = field_sql_storage
+dependencies[] = field_ui
+dependencies[] = file
+dependencies[] = filter
+dependencies[] = help
+dependencies[] = image
+dependencies[] = list
+dependencies[] = menu
+dependencies[] = node
+dependencies[] = number
+dependencies[] = options
+dependencies[] = path
+dependencies[] = php
+dependencies[] = poll
+dependencies[] = rdf
+dependencies[] = search
+dependencies[] = system
+dependencies[] = taxonomy
+dependencies[] = text
+dependencies[] = trigger
+dependencies[] = update
+dependencies[] = user
+; Date/Time
+dependencies[] = date
+dependencies[] = date_all_day
+dependencies[] = date_api
+dependencies[] = date_views
+; Development
+dependencies[] = devel
+dependencies[] = object_log
+dependencies[] = profiler_builder
+dependencies[] = reroute_email
+; Features extra
+dependencies[] = fe_block
+; Fields
+dependencies[] = bundle_copy
+dependencies[] = conditional_fields
+dependencies[] = content_taxonomy
+dependencies[] = content_taxonomy_autocomplete
+dependencies[] = entityreference
+dependencies[] = entityreference_prepopulate
+dependencies[] = field_collection
+dependencies[] = field_group
+dependencies[] = field_permissions
+dependencies[] = field_tools
+dependencies[] = field_tools_taxonomy
+dependencies[] = markup
+; Input filters
+dependencies[] = pathologic
+; Logging and alerts
+dependencies[] = emaillog
+; Mail
+dependencies[] = mail_logger
+; Media
+dependencies[] = imce
+; Node export
+dependencies[] = node_export
+; OP Custom
+dependencies[] = op_common
+; Open Proposals
+dependencies[] = op_deploy
+; Organic groups
+dependencies[] = og
+dependencies[] = og_access
+dependencies[] = og_context
+dependencies[] = og_field_access
+dependencies[] = og_subscriptions
+dependencies[] = og_ui
+dependencies[] = og_vocab
+; Other
+dependencies[] = advanced_help
+dependencies[] = backup_migrate
+dependencies[] = better_formats
+dependencies[] = boxes
+dependencies[] = diff
+dependencies[] = entity
+dependencies[] = entity_autocomplete
+dependencies[] = entity_token
+dependencies[] = entity_view_mode
+dependencies[] = environment
+dependencies[] = environment_force
+dependencies[] = identicon
+dependencies[] = job_scheduler
+dependencies[] = kissinsights
+dependencies[] = libraries
+dependencies[] = logintoboggan
+dependencies[] = logintoboggan_content_access_integration
+dependencies[] = mail_edit
+dependencies[] = mimedetect
+dependencies[] = mollom
+dependencies[] = pathauto
+dependencies[] = persistent_login
+dependencies[] = realname
+dependencies[] = redirect
+dependencies[] = safeword
+dependencies[] = stage_file_proxy
+dependencies[] = stringoverrides
+dependencies[] = strongarm
+dependencies[] = token
+dependencies[] = token_filter
+dependencies[] = transliteration
+; Path management
+dependencies[] = globalredirect
+; Rules
+dependencies[] = rules
+dependencies[] = rules_admin
+dependencies[] = rules_scheduler
+; Spam control
+dependencies[] = honeypot
+; Subscriptions
+dependencies[] = subscriptions
+dependencies[] = subscriptions_content
+dependencies[] = subscriptions_mail
+dependencies[] = subscriptions_ui
+; Statistics
+dependencies[] = googleanalytics
+; Taxonomy
+dependencies[] = tagadelic
+dependencies[] = tagadelic_taxonomy
+; UUID
+dependencies[] = uuid
+; User interface
+dependencies[] = beautytips
+dependencies[] = beautytips_manager
+dependencies[] = beautytips_ui
+dependencies[] = imce_wysiwyg
+dependencies[] = jquery_plugin
+dependencies[] = jquery_update
+dependencies[] = wysiwyg
+; Views
+dependencies[] = better_exposed_filters
+dependencies[] = views
+dependencies[] = views_bulk_operations
+dependencies[] = views_data_export
+dependencies[] = views_ui
+; Voting
+dependencies[] = rate
+dependencies[] = rate_expiration
+dependencies[] = votingapi
+; Features
+dependencies[] = features
+dependencies[] = features_override
+dependencies[] = mail_edit_features
+dependencies[] = op_filters
+dependencies[] = op_global
+dependencies[] = op_permits
+dependencies[] = op_strings
+dependencies[] = op_subs
+dependencies[] = op_user_fields
+dependencies[] = opg_core
+dependencies[] = opg_generic
+dependencies[] = op_condit
+

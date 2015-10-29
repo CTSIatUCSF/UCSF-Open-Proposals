@@ -1,0 +1,35 @@
+diff --git a/includes/cache.inc b/includes/cache.inc
+index 207bf66..6386e35 100644
+--- a/includes/cache.inc
++++ b/includes/cache.inc
+@@ -164,7 +164,29 @@ function cache_clear_all($cid = NULL, $bin = NULL, $wildcard = FALSE) {
+     cache_clear_all(NULL, 'cache_page');
+     return;
+   }
+-  return _cache_get_object($bin)->clear($cid, $wildcard);
++  $tick = 0;
++  $fail = true;
++  while ($fail and $tick < 5) {
++    try {
++      $result = _cache_get_object($bin)->clear($cid, $wildcard);
++      $fail = false;
++    }
++    catch (Exception $e) {
++      drupal_set_message("exception from _cache_get_object: try again {$tick}");
++      if (function_exists('dpm')) {
++        dpm($e, 'cache exception ' . $tick);
++      }
++      else {
++        file_put_contents("/tmp/cache_exception.{$tick}.txt", var_export($e, true));
++      }
++      $tick++;
++      sleep(1);
++    }
++  }
++  if ($fail) {
++    throw new Exception('cache failure');
++  }
++  return $result;
+ }
+ 
+ /**

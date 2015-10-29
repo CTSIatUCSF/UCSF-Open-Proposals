@@ -1,0 +1,6 @@
+name = "OP Deploy"
+description = "Open Proposals deployment module"
+package = "Open Proposals"
+project = "op_deploy"
+core = 7.x
+version = "7.x-1.0"

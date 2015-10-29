@@ -1,0 +1,13 @@
+diff --git a/includes/og_vocab.og_vocab.inc b/includes/og_vocab.og_vocab.inc
+index 3f63b5f..cd1e916 100644
+--- a/includes/og_vocab.og_vocab.inc
++++ b/includes/og_vocab.og_vocab.inc
+@@ -249,7 +249,7 @@ function og_vocab_element_after_build($form, &$form_state) {
+       // Field has no reference, so we can hide it.
+       continue;
+     }
+-    $form[$field_name][LANGUAGE_NONE]['#theme'] = '';
++    unset($form[$field_name][LANGUAGE_NONE]['#theme']);
+     unset($form[$field_name][LANGUAGE_NONE]['add_more']);
+     unset($form[$field_name][LANGUAGE_NONE][0]['_weight']);
+ 

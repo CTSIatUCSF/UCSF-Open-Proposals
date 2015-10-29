@@ -1,0 +1,131 @@
+diff --git a/modules/field/modules/options/options.module b/modules/field/modules/options/options.module
+index 3862ba7..1d1eedf 100644
+--- a/modules/field/modules/options/options.module
++++ b/modules/field/modules/options/options.module
+@@ -169,7 +169,7 @@ function options_field_widget_settings_form($field, $instance) {
+  * Form element validation handler for options element.
+  */
+ function options_field_widget_validate($element, &$form_state) {
+-  if ($element['#required'] && $element['#value'] == '_none') {
++  if ($element['#required'] && $element['#value'] == '') {
+     form_error($element, t('!name field is required.', array('!name' => $element['#title'])));
+   }
+   // Transpose selections from field => delta to delta => field, turning
+@@ -251,9 +251,9 @@ function _options_get_options($field, $instance, $properties, $entity_type, $ent
+     $options = options_array_flatten($options);
+   }
+ 
+-  if ($properties['empty_option']) {
++  if ($properties['empty_option'] && !isset($options[''])) {
+     $label = theme('options_none', array('instance' => $instance, 'option' => $properties['empty_option']));
+-    $options = array('_none' => $label) + $options;
++    $options = array('' => $label) + $options;
+   }
+ 
+   return $options;
+@@ -312,7 +312,7 @@ function _options_form_to_storage($element) {
+   // Filter out the 'none' option. Use a strict comparison, because
+   // 0 == 'any string'.
+   if ($properties['empty_option']) {
+-    $index = array_search('_none', $values, TRUE);
++    $index = array_search('', $values, TRUE);
+     if ($index !== FALSE) {
+       unset($values[$index]);
+     }
+diff --git a/modules/field/modules/options/options.test b/modules/field/modules/options/options.test
+index 7183311..2dcb247 100644
+--- a/modules/field/modules/options/options.test
++++ b/modules/field/modules/options/options.test
+@@ -99,7 +99,7 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     $this->assertNoFieldChecked("edit-card-1-$langcode-2");
+ 
+     // Unselect option.
+-    $edit = array("card_1[$langcode]" => '_none');
++    $edit = array("card_1[$langcode]" => '');
+     $this->drupalPost(NULL, $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_1', $langcode, array());
+ 
+@@ -225,17 +225,17 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     // Display form.
+     $this->drupalGet('test-entity/manage/' . $entity->ftid . '/edit');
+     // A required field without any value has a "none" option.
+-    $this->assertTrue($this->xpath('//select[@id=:id]//option[@value="_none" and text()=:label]', array(':id' => 'edit-card-1-' . $langcode, ':label' => t('- Select a value -'))), 'A required select list has a "Select a value" choice.');
++    $this->assertTrue($this->xpath('//select[@id=:id]//option[@value="" and text()=:label]', array(':id' => 'edit-card-1-' . $langcode, ':label' => t('- Select a value -'))), 'A required select list has a "Select a value" choice.');
+ 
+     // With no field data, nothing is selected.
+-    $this->assertNoOptionSelected("edit-card-1-$langcode", '_none');
++    $this->assertNoOptionSelected("edit-card-1-$langcode", '');
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 0);
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 1);
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 2);
+     $this->assertRaw('Some dangerous &amp; unescaped markup', 'Option text was properly filtered.');
+ 
+     // Submit form: select invalid 'none' option.
+-    $edit = array("card_1[$langcode]" => '_none');
++    $edit = array("card_1[$langcode]" => '');
+     $this->drupalPost(NULL, $edit, t('Save'));
+     $this->assertRaw(t('!title field is required.', array('!title' => $instance['field_name'])), 'Cannot save a required field when selecting "none" from the select list.');
+ 
+@@ -247,7 +247,7 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     // Display form: check that the right options are selected.
+     $this->drupalGet('test-entity/manage/' . $entity->ftid . '/edit');
+     // A required field with a value has no 'none' option.
+-    $this->assertFalse($this->xpath('//select[@id=:id]//option[@value="_none"]', array(':id' => 'edit-card-1-' . $langcode)), 'A required select list with an actual value has no "none" choice.');
++    $this->assertFalse($this->xpath('//select[@id=:id]//option[@value=""]', array(':id' => 'edit-card-1-' . $langcode)), 'A required select list with an actual value has no "none" choice.');
+     $this->assertOptionSelected("edit-card-1-$langcode", 0);
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 1);
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 2);
+@@ -259,9 +259,9 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     // Display form.
+     $this->drupalGet('test-entity/manage/' . $entity->ftid . '/edit');
+     // A non-required field has a 'none' option.
+-    $this->assertTrue($this->xpath('//select[@id=:id]//option[@value="_none" and text()=:label]', array(':id' => 'edit-card-1-' . $langcode, ':label' => t('- None -'))), 'A non-required select list has a "None" choice.');
++    $this->assertTrue($this->xpath('//select[@id=:id]//option[@value="" and text()=:label]', array(':id' => 'edit-card-1-' . $langcode, ':label' => t('- None -'))), 'A non-required select list has a "None" choice.');
+     // Submit form: Unselect the option.
+-    $edit = array("card_1[$langcode]" => '_none');
++    $edit = array("card_1[$langcode]" => '');
+     $this->drupalPost('test-entity/manage/' . $entity->ftid . '/edit', $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_1', $langcode, array());
+ 
+@@ -291,7 +291,7 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     $this->assertNoOptionSelected("edit-card-1-$langcode", 2);
+ 
+     // Submit form: Unselect the option.
+-    $edit = array("card_1[$langcode]" => '_none');
++    $edit = array("card_1[$langcode]" => '');
+     $this->drupalPost('test-entity/manage/' . $entity->ftid . '/edit', $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_1', $langcode, array());
+   }
+@@ -361,12 +361,12 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+ 
+     // Check that the 'none' option has no effect if actual options are selected
+     // as well.
+-    $edit = array("card_2[$langcode][]" => array('_none' => '_none', 0 => 0));
++    $edit = array("card_2[$langcode][]" => array('' => '', 0 => 0));
+     $this->drupalPost('test-entity/manage/' . $entity->ftid . '/edit', $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_2', $langcode, array(0));
+ 
+     // Check that selecting the 'none' option empties the field.
+-    $edit = array("card_2[$langcode][]" => array('_none' => '_none'));
++    $edit = array("card_2[$langcode][]" => array('' => ''));
+     $this->drupalPost('test-entity/manage/' . $entity->ftid . '/edit', $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_2', $langcode, array());
+ 
+@@ -408,7 +408,7 @@ class OptionsWidgetsTestCase extends FieldTestCase {
+     $this->assertNoOptionSelected("edit-card-2-$langcode", 2);
+ 
+     // Submit form: Unselect the option.
+-    $edit = array("card_2[$langcode][]" => array('_none' => '_none'));
++    $edit = array("card_2[$langcode][]" => array('' => ''));
+     $this->drupalPost('test-entity/manage/' . $entity->ftid . '/edit', $edit, t('Save'));
+     $this->assertFieldValues($entity_init, 'card_2', $langcode, array());
+   }
+@@ -545,7 +545,7 @@ class OptionsSelectDynamicValuesTestCase extends ListDynamicValuesTestCase {
+     $this->assertEqual(count($options), count($this->test) + 1);
+     foreach ($options as $option) {
+       $value = (string) $option['value'];
+-      if ($value != '_none') {
++      if ($value != '') {
+         $this->assertTrue(array_search($value, $this->test));
+       }
+     }

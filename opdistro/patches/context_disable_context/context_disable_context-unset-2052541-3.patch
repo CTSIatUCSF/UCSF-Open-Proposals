@@ -1,0 +1,26 @@
+diff --git a/plugins/context_reaction_disable_context.inc b/plugins/context_reaction_disable_context.inc
+index 67d85bb..c163f9f 100644
+--- a/plugins/context_reaction_disable_context.inc
++++ b/plugins/context_reaction_disable_context.inc
+@@ -42,17 +42,19 @@ class context_reaction_disable_context extends context_reaction {
+     $contexts = $this->get_contexts();
+     $processed = array();
+     
++    $setcontexts = context_get('context');
+     foreach ($contexts as $context) {
+       $values = $this->fetch_from_context($context);
+       
+       foreach ($values['disabled'] as $disable) {
+-        if (context_isset('context', $disable) && !in_array($disable, $processed)) {
+-          context_set('context', $disable, FALSE);
++        if (isset($setcontexts[$disable]) && !in_array($disable, $processed)) {
++          unset($setcontexts[$disable]);
+         }
+       }
+       
+       // Add the current context to $processed so it is not removed by other contexts
+       $processed[] = $context->name;
+     }
++    context_set('context', $setcontexts);
+   }
+ }
